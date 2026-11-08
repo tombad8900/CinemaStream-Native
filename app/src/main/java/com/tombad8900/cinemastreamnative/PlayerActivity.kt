@@ -68,6 +68,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_URL = "cinemastream.player.URL"
         const val EXTRA_TITLE = "cinemastream.player.TITLE"
         const val EXTRA_SUBTITLE_URL = "cinemastream.player.SUBTITLE_URL"
+        const val EXTRA_SUBTITLE_URLS = "cinemastream.player.SUBTITLE_URLS"
         const val EXTRA_HEADERS = "cinemastream.player.HEADERS"
         const val EXTRA_PLAYBACK_METADATA = "cinemastream.player.PLAYBACK_METADATA"
     }
@@ -95,6 +96,8 @@ class PlayerActivity : ComponentActivity() {
             "$title $url"
         )
         val subtitleUrl = intent.getStringExtra(EXTRA_SUBTITLE_URL)
+        val subtitleUrls = intent.getStringArrayListExtra(EXTRA_SUBTITLE_URLS)?.toList()
+            .orEmpty()
         val headersBundle = intent.getBundleExtra(EXTRA_HEADERS)
         val headers = headersBundle?.keySet()
             ?.associateWith { headersBundle.getString(it).orEmpty() }
@@ -104,7 +107,8 @@ class PlayerActivity : ComponentActivity() {
             context = this,
             url = url,
             headers = headers,
-            subtitleUrl = subtitleUrl
+            subtitleUrl = subtitleUrl,
+            subtitleUrls = subtitleUrls
         )
         exoPlayer = player
 

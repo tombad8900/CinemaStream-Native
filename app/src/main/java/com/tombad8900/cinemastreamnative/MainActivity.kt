@@ -68,33 +68,54 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            CinemaStreamApp(onPlayUrl = { url, title ->
-                val playerIntent = Intent(this@MainActivity, PlayerActivity::class.java).apply {
-                    putExtra(PlayerActivity.EXTRA_URL, url)
-                    putExtra(PlayerActivity.EXTRA_TITLE, title)
+            val playWithMetadata: (String, String, Map<String, String>, List<String>) -> Unit =
+                { url, title, headers, subtitleUrls ->
+                    val playerIntent = Intent(this@MainActivity, PlayerActivity::class.java).apply {
+                        putExtra(PlayerActivity.EXTRA_URL, url)
+                        putExtra(PlayerActivity.EXTRA_TITLE, title)
 
-                    val catalogItem = catalog.firstOrNull {
-                        it.title.equals(title, ignoreCase = true)
-                    }
-                    val metadata = PlaybackMetadata(
-                        title = title,
-                        year = catalogItem?.year?.toIntOrNull(),
-                        contentType = when (catalogItem?.type) {
-                            "مسلسل" -> "tv"
-                            "فيلم" -> "movie"
-                            else -> "unknown"
+                        val catalogItem = catalog.firstOrNull {
+                            it.title.equals(title, ignoreCase = true)
                         }
-                    )
-                    putExtra(PlayerActivity.EXTRA_PLAYBACK_METADATA, metadata.toJson())
+                        val metadata = PlaybackMetadata(
+                            title = title,
+                            year = catalogItem?.year?.toIntOrNull(),
+                            contentType = when (catalogItem?.type) {
+                                "مسلسل" -> "tv"
+                                "فيلم" -> "movie"
+                                else -> "unknown"
+                            }
+                        )
+                        putExtra(PlayerActivity.EXTRA_PLAYBACK_METADATA, metadata.toJson())
+
+                        if (headers.isNotEmpty()) {
+                            putExtra(PlayerActivity.EXTRA_HEADERS, Bundle().apply {
+                                headers.forEach { (key, value) -> putString(key, value) }
+                            })
+                        }
+                        putStringArrayListExtra(
+                            PlayerActivity.EXTRA_SUBTITLE_URLS,
+                            ArrayList(subtitleUrls.distinct())
+                        )
+                    }
+                    startActivity(playerIntent)
                 }
-                startActivity(playerIntent)
-            })
+
+            CinemaStreamApp(
+                onPlayUrl = { url, title ->
+                    playWithMetadata(url, title, emptyMap(), emptyList())
+                },
+                onPlayCaptured = playWithMetadata
+            )
         }
     }
 }
 
 @Composable
-private fun CinemaStreamApp(onPlayUrl: (String, String) -> Unit) {
+private fun CinemaStreamApp(
+    onPlayUrl: (String, String) -> Unit,
+    onPlayCaptured: (String, String, Map<String, String>, List<String>) -> Unit
+) {
     val tabs = listOf("الرئيسية", "استكشاف", "مكتبتي", "IPTV", "المتصفح", "الإعدادات")
     val symbols = listOf("⌂", "⌕", "♡", "▣", "◎", "⚙")
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -246,6 +267,7 @@ private fun CinemaStreamApp(onPlayUrl: (String, String) -> Unit) {
                             2 -> LibraryScreen(favorites, watched)
                             4 -> com.tombad8900.cinemastreamnative.browser.BrowserScreen(
                                     onPlayUrl = onPlayUrl,
+                                    onPlayCaptured = onPlayCaptured,
                                     sources = browserSources,
                                     media = browserMedia,
                                     season = browserSeason,

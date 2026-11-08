@@ -25,7 +25,8 @@ import android.net.Uri
 private data class BrowserCapture(
     val url: String,
     val kind: String,
-    val playable: Boolean
+    val playable: Boolean,
+    val headers: Map<String, String> = emptyMap()
 )
 
 private class BrowserBridge(
@@ -94,6 +95,7 @@ private fun classifyResource(url: String): BrowserCapture? {
 @Composable
 fun BrowserScreen(
     onPlayUrl: (String, String) -> Unit,
+    onPlayCaptured: (String, String, Map<String, String>, List<String>) -> Unit,
     sources: List<com.tombad8900.cinemastreamnative.sources.StreamSource>,
     media: com.tombad8900.cinemastreamnative.tmdb.TmdbMedia?,
     season: Int,
@@ -103,6 +105,7 @@ fun BrowserScreen(
 ) {
     val context = LocalContext.current
     val captures = remember { mutableStateListOf<BrowserCapture>() }
+    val subtitleUrls = remember { mutableStateListOf<String>() }
     val handler = remember { Handler(Looper.getMainLooper()) }
 
     var address by remember { mutableStateOf("") }
@@ -144,9 +147,19 @@ fun BrowserScreen(
         }
 
         captures.clear()
+        subtitleUrls.clear()
         address = url
         showSources = false
         browser?.loadUrl(url)
+    }
+
+    fun addSubtitle(url: String) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+        handler.post {
+            if (subtitleUrls.size < 50 && url !in subtitleUrls) {
+                subtitleUrls.add(url)
+            }
+        }
     }
 
     fun addCapture(item: BrowserCapture) {
@@ -284,6 +297,7 @@ Row(
 
                     addJavascriptInterface(
                         BrowserBridge { url ->
+                            addSubtitle(url)
                             addCapture(
                                 BrowserCapture(
                                     url,
@@ -313,6 +327,7 @@ Row(
                             if (!url.isNullOrBlank()) {
                                 address = url
                                 captures.clear()
+                                subtitleUrls.clear()
                             }
                         }
 
@@ -320,8 +335,29 @@ Row(
                             view: WebView?,
                             request: WebResourceRequest?
                         ): android.webkit.WebResourceResponse? {
-                            request?.url?.toString()?.let { url ->
-                                classifyResource(url)?.let(::addCapture)
+                            request?.let { req ->
+                                val url = req.url.toString()
+                                classifyResource(url)?.let { item ->
+                                    val allowed = setOf(
+                                        "user-agent", "referer", "origin",
+                                        "cookie", "authorization"
+                                    )
+                                    val headers = req.requestHeaders
+                                        .filterKeys { it.lowercase() in allowed }
+                                        .toMutableMap()
+
+                                    if (headers.keys.none { it.equals("User-Agent", true) }) {
+                                        view?.settings?.userAgentString?.let {
+                                            headers["User-Agent"] = it
+                                        }
+                                    }
+                                    if (headers.keys.none { it.equals("Referer", true) } &&
+                                        address.startsWith("http", true)) {
+                                        headers["Referer"] = address
+                                    }
+                                    addCapture(item.copy(headers = headers))
+                                    if (!item.playable) addSubtitle(url)
+                                }
                             }
                             return null
                         }
@@ -390,7 +426,12 @@ Row(
                         if (item.playable) {
                             TextButton(
                                 onClick = {
-                                    onPlayUrl(item.url, pageTitle)
+                                    onPlayCaptured(
+                                        item.url,
+                                        pageTitle,
+                                        item.headers,
+                                        subtitleUrls.distinct()
+                                    )
                                 }
                             ) {
                                 Text("تشغيل")

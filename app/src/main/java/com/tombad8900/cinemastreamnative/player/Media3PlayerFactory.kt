@@ -18,7 +18,8 @@ object Media3PlayerFactory {
         context: Context,
         url: String,
         headers: Map<String, String> = emptyMap(),
-        subtitleUrl: String? = null
+        subtitleUrl: String? = null,
+        subtitleUrls: List<String> = emptyList()
     ): ExoPlayer {
 
         val httpFactory = DefaultHttpDataSource.Factory()
@@ -59,31 +60,46 @@ object Media3PlayerFactory {
             mediaItemBuilder.setMimeType(mimeType)
         }
 
-        if (!subtitleUrl.isNullOrBlank()) {
-            val subtitlePath = subtitleUrl
-                .substringBefore("?")
-                .lowercase()
-
-            val subtitleMime = when {
-                subtitlePath.endsWith(".srt") -> MimeTypes.APPLICATION_SUBRIP
-                subtitlePath.endsWith(".vtt") -> MimeTypes.TEXT_VTT
-                subtitlePath.endsWith(".ttml") -> MimeTypes.APPLICATION_TTML
-                subtitlePath.endsWith(".ass") ||
-                    subtitlePath.endsWith(".ssa") -> MimeTypes.TEXT_SSA
-                else -> null
+        val subtitleCandidates = (listOfNotNull(subtitleUrl) + subtitleUrls)
+            .distinct()
+            .mapNotNull { subtitle ->
+                val path = Uri.parse(subtitle).path.orEmpty().lowercase()
+                val mime = when {
+                    path.endsWith(".srt") -> MimeTypes.APPLICATION_SUBRIP
+                    path.endsWith(".vtt") -> MimeTypes.TEXT_VTT
+                    path.endsWith(".ttml") || path.endsWith(".dfxp") ->
+                        MimeTypes.APPLICATION_TTML
+                    path.endsWith(".ass") || path.endsWith(".ssa") ->
+                        MimeTypes.TEXT_SSA
+                    else -> null
+                }
+                if (mime == null) null else {
+                    val language = if (
+                        subtitle.contains("arabic", true) ||
+                        subtitle.contains("/ar/", true) ||
+                        subtitle.contains("lang=ar", true) ||
+                        subtitle.contains("language=ar", true)
+                    ) "ar" else "und"
+                    Triple(subtitle, mime, language)
+                }
             }
 
-            if (subtitleMime != null) {
-                val subtitle = MediaItem.SubtitleConfiguration.Builder(
-                    Uri.parse(subtitleUrl)
-                )
-                    .setMimeType(subtitleMime)
-                    .setLanguage("ar")
-                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+        if (subtitleCandidates.isNotEmpty()) {
+            val defaultIndex = subtitleCandidates.indexOfFirst { it.third == "ar" }
+                .let { if (it >= 0) it else 0 }
+
+            val configurations = subtitleCandidates.mapIndexed { index, item ->
+                val (url, mime, language) = item
+                MediaItem.SubtitleConfiguration.Builder(Uri.parse(url))
+                    .setMimeType(mime)
+                    .setLanguage(language)
+                    .setLabel("ترجمة ${index + 1}")
+                    .setSelectionFlags(
+                        if (index == defaultIndex) C.SELECTION_FLAG_DEFAULT else 0
+                    )
                     .build()
-
-                mediaItemBuilder.setSubtitleConfigurations(listOf(subtitle))
             }
+            mediaItemBuilder.setSubtitleConfigurations(configurations)
         }
 
         val mediaItem = mediaItemBuilder.build()
