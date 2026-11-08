@@ -38,31 +38,56 @@ private class BrowserBridge(
 }
 
 private fun classifyResource(url: String): BrowserCapture? {
-    val path = Uri.parse(url).path.orEmpty().lowercase()
+    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+    val path = uri.path.orEmpty().lowercase()
+    val query = uri.encodedQuery.orEmpty().lowercase()
+    val full = url.lowercase()
 
-    return when {
-        path.endsWith(".m3u8") ->
-            BrowserCapture(url, "فيديو HLS", true)
+    if (uri.scheme != "http" && uri.scheme != "https") return null
 
-        path.endsWith(".mpd") ->
-            BrowserCapture(url, "فيديو DASH", true)
+    val subtitleHint = listOf(
+        ".srt", ".vtt", ".ass", ".ssa", ".ttml", ".dfxp",
+        "subtitle", "subtitles", "subtitel", "captions",
+        "closedcaption", "texttrack", "/sub/"
+    ).any { it in path || it in query || it in full }
 
-        path.endsWith(".mp4") ||
-        path.endsWith(".m4v") ||
-        path.endsWith(".webm") ->
-            BrowserCapture(url, "فيديو مباشر", true)
-
-        path.endsWith(".srt") ||
-        path.endsWith(".vtt") ||
-        path.endsWith(".ass") ||
-        path.endsWith(".ssa") ||
-        url.contains("subtitle", true) ||
-        url.contains("subtitel", true) ||
-        url.contains("/sub/", true) ->
-            BrowserCapture(url, "مورد ترجمة محتمل - غير مؤكد", false)
-
-        else -> null
+    if (subtitleHint) {
+        return BrowserCapture(url, "ترجمة / مسار نصي", false)
     }
+
+    val videoHint = listOf(
+        ".m3u8", ".mpd", ".mp4", ".m4v", ".webm", ".mov",
+        ".mkv", ".ts", ".m4s", ".cmfv", ".cmfa"
+    ).any { path.endsWith(it) }
+
+    val streamingHint = listOf(
+        "manifest", "playlist", "master", "videoplayback",
+        "mime=video", "type=video", "format=m3u8",
+        "hls", "dash", "googlevideo"
+    ).any { it in full }
+
+    val mediaTypeHint = listOf(
+        "video/", "application/vnd.apple.mpegurl",
+        "application/x-mpegurl", "application/dash+xml"
+    ).any { it in full }
+
+    if (!videoHint && !streamingHint && !mediaTypeHint) return null
+
+    val segment = listOf(".ts", ".m4s", ".cmfv", ".cmfa").any {
+        path.endsWith(it)
+    }
+
+    if (segment) {
+        return BrowserCapture(url, "جزء من بث فيديو - ليس رابط تشغيل مستقل", false)
+    }
+
+    val kind = when {
+        ".m3u8" in path || "mpegurl" in full -> "فيديو HLS"
+        ".mpd" in path || "dash+xml" in full -> "فيديو DASH"
+        else -> "رابط فيديو مرشح للتشغيل"
+    }
+
+    return BrowserCapture(url, kind, true)
 }
 
 @SuppressLint("SetJavaScriptEnabled")
