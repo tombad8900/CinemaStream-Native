@@ -1,0 +1,14 @@
+.gradle/
+**/build/
+local.properties
+*.log
+*.apk
+*.aab
+*.jks
+*.keystore
+*.iml
+.idea/
+.DS_Store
+
+# Backup files
+*.backup
