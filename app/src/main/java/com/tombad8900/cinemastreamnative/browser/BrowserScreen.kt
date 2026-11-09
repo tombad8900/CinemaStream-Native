@@ -46,20 +46,32 @@ private val blockedAdHosts = setOf(
     "popads.net", "popcash.net", "propellerads.com",
     "exoclick.com", "juicyads.com", "trafficjunky.com",
     "adsterra.com", "adform.net", "criteo.com",
-    "amazon-adsystem.com"
+    "amazon-adsystem.com", "pubmatic.com", "rubiconproject.com", "openx.net", "adsrvr.org", "revcontent.com", "mgid.com"
 )
+
+private const val BROWSER_UA = "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+private fun isSameSite(a: String, b: String): Boolean {
+    fun site(u: String): String {
+        val h = runCatching { Uri.parse(u).host?.lowercase() }.getOrNull().orEmpty()
+        return h.split('.').takeLast(2).joinToString(".")
+    }
+    val x = site(a)
+    return x.isNotBlank() && x == site(b)
+}
 
 private fun isBlockedAdUrl(rawUrl: String, pageUrl: String): Boolean {
     val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return false
-    if (uri.scheme != "http" && uri.scheme != "https") return true
-    if (classifyResource(rawUrl) != null) return false
+    val scheme = uri.scheme?.lowercase().orEmpty()
+    if (scheme == "about" || scheme == "blob" || scheme == "data") return false
+    if (scheme != "http" && scheme != "https") return true
     val host = uri.host?.lowercase().orEmpty()
     if (host.isBlank()) return false
     if (blockedAdHosts.any { host == it || host.endsWith(".$it") }) return true
     val pageHost = runCatching { Uri.parse(pageUrl).host?.lowercase() }.getOrNull()
     if (!pageHost.isNullOrBlank() && host == pageHost) return false
     val path = (uri.path.orEmpty() + "?" + uri.encodedQuery.orEmpty()).lowercase()
-    return listOf("/adserver/", "/popunder/", "/clickunder/").any { it in path }
+    return listOf("/adserver/", "/popunder/", "/clickunder/", "/popads").any { it in path }
 }
 
 private class BrowserBridge(
@@ -79,7 +91,7 @@ private fun classifyResource(url: String): BrowserCapture? {
 
     if (uri.scheme != "http" && uri.scheme != "https") return null
 
-    val isArabicSub = listOf("ar", "arabic", "عربي", "ara").any { hint -> hint in path || hint in query || hint in full }
+    val isArabicSub = Regex("(^|[^a-z])(ar|ara|arabic)([^a-z]|$)").containsMatchIn(path + "?" + query) || full.contains("عربي")
     val subtitleHint = listOf(
         ".srt", ".vtt", ".ass", ".ssa", ".ttml", ".dfxp",
         "subtitle", "subtitles", "captions", "texttrack"
@@ -203,6 +215,29 @@ fun BrowserScreen(
         }
     }
 
+    val currentUrlRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+    var canGoBackState by remember { mutableStateOf(false) }
+    var webViewKey by remember { mutableStateOf(0) }
+
+    androidx.activity.compose.BackHandler(enabled = isFullScreen || canGoBackState) {
+        if (isFullScreen) {
+            fullScreenCustomView?.let { custom -> (custom.parent as? ViewGroup)?.removeView(custom) }
+            fullScreenCustomView = null
+            fullScreenCallback?.onCustomViewHidden()
+            fullScreenCallback = null
+            isFullScreen = false
+        } else {
+            webViewInstance?.goBack()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewInstance?.let { it.stopLoading(); it.destroy() }
+            webViewInstance = null
+        }
+    }
+
     LaunchedEffect(sourcePickerRequest) {
         if (sourcePickerRequest > 0 && media != null) {
             showSources = true
@@ -311,6 +346,7 @@ fun BrowserScreen(
 
         Spacer(Modifier.height(8.dp))
 
+        key(webViewKey) {
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
@@ -323,6 +359,8 @@ fun BrowserScreen(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     setBackgroundColor(android.graphics.Color.WHITE)
+                    android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
 
                     settings.apply {
                         javaScriptEnabled = true
@@ -367,7 +405,7 @@ fun BrowserScreen(
                             fun route(target: String) {
                                 if (handled) return
                                 handled = true
-                                if (!isBlockedAdUrl(target, address)) {
+                                if (!isBlockedAdUrl(target, currentUrlRef.get().ifBlank { address }) && isSameSite(target, currentUrlRef.get().ifBlank { address })) {
                                     mainHandler.post {
                                         address = target
                                         webViewInstance?.loadUrl(target)
@@ -441,8 +479,8 @@ fun BrowserScreen(
                                 callback?.onCustomViewHidden()
                                 return
                             }
-                            val activity = ctx as? Activity ?: return
-                            val decor = activity.window.decorView as? ViewGroup ?: return
+                            val activity = ctx as? Activity ?: run { callback?.onCustomViewHidden(); return }
+                            val decor = activity.window.decorView as? ViewGroup ?: run { callback?.onCustomViewHidden(); return }
                             fullScreenCustomView = view
                             fullScreenCallback = callback
                             decor.addView(view, ViewGroup.LayoutParams(
@@ -464,12 +502,32 @@ fun BrowserScreen(
                     }
 
                     webViewClient = object : WebViewClient() {
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                            if (!url.isNullOrBlank()) {
+                                currentUrlRef.set(url)
+                                address = url
+                            }
+                        }
+
+                        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                            canGoBackState = view?.canGoBack() == true
+                        }
+
+                        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                            mainHandler.post {
+                                webViewInstance?.let { runCatching { (it.parent as? ViewGroup)?.removeView(it); it.destroy() } }
+                                webViewInstance = null
+                                webViewKey += 1
+                            }
+                            return true
+                        }
+
                         override fun shouldOverrideUrlLoading(
                             view: WebView?,
                             request: WebResourceRequest?
                         ): Boolean {
                             val target = request?.url?.toString() ?: return true
-                            return isBlockedAdUrl(target, view?.url ?: address)
+                            return isBlockedAdUrl(target, currentUrlRef.get().ifBlank { address })
                         }
 
                         override fun shouldInterceptRequest(
@@ -477,7 +535,7 @@ fun BrowserScreen(
                             req: WebResourceRequest?
                         ): WebResourceResponse? {
                             val url = req?.url?.toString() ?: return null
-                            if (isBlockedAdUrl(url, view?.url ?: address)) {
+                            if (isBlockedAdUrl(url, currentUrlRef.get().ifBlank { address })) {
                                 return WebResourceResponse(
                                     "text/plain", "UTF-8", 204, "No Content",
                                     emptyMap<String, String>(),
@@ -495,7 +553,7 @@ fun BrowserScreen(
                                     .toMutableMap()
 
                                 if (headers.keys.none { it.equals("User-Agent", true) }) {
-                                    view?.settings?.userAgentString?.let {
+                                    BROWSER_UA.let {
                                         headers["User-Agent"] = it
                                     }
                                 }
@@ -526,7 +584,7 @@ fun BrowserScreen(
                                         document.querySelectorAll('video track, track').forEach(function(t) {
                                             var lang = (t.srclang || t.label || '').toLowerCase();
                                             var src = t.src;
-                                            if (src && (lang.includes('ar') || lang.includes('arabic') || lang.includes('عربي') || src.includes('ar'))) {
+                                            if (src && (lang.includes('ar') || lang.includes('arabic') || lang.includes('عربي') || /[._\/=-](ar|ara|arabic)[._\/=-]/i.test(src))) {
                                                 if (window.CinemaCapture) {
                                                     window.CinemaCapture.subtitle(src);
                                                 }
@@ -548,7 +606,8 @@ fun BrowserScreen(
                 }
             },
             update = {}
-        )
+            )
+        }
 
         if (captures.isNotEmpty()) {
             Text(

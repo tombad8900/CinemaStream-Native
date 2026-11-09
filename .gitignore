@@ -1,14 +1,20 @@
-.gradle/
-**/build/
-local.properties
-*.log
-*.apk
-*.aab
-*.jks
-*.keystore
-*.iml
-.idea/
-.DS_Store
 
 # Backup files
+**/build/
+*.aab
+*.apk
 *.backup
+*.backup_*
+*.before_*
+*.iml
+*.jks
+*.keystore
+*.log
+*.pre_patch
+.DS_Store
+.gradle/
+.idea/
+build/
+files.txt
+local.properties
+patch.py

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#1FFFFFFF"
+        android:pathData="M0,0 H108 V50 C85,62 40,62 0,38 Z" />
+
+    <group android:translateY="2.5">
+        <path
+            android:pathData="M32,70 V43 M32,52 C32,40 54,40 54,52 V70 M54,52 C54,40 76,40 76,52 V70"
+            android:strokeColor="#40000000"
+            android:strokeWidth="9"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+
+    <path
+        android:pathData="M32,70 V43 M32,52 C32,40 54,40 54,52 V70 M54,52 C54,40 76,40 76,52 V70"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="0" android:startY="36"
+                android:endX="0" android:endY="75"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="0.5" android:color="#D9F2F7FF" />
+                <item android:offset="1" android:color="#8CCFE0FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <group android:translateX="-1.2" android:translateY="-1.2">
+        <path
+            android:pathData="M32,66 V43 M32,52 C32,40 54,40 54,52 V66 M54,52 C54,40 76,40 76,52 V66"
+            android:strokeColor="#B3FFFFFF"
+            android:strokeWidth="2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>
