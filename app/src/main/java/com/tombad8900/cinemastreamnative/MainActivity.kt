@@ -6,6 +6,11 @@ import com.tombad8900.cinemastreamnative.tmdb.TmdbDiscoverScreen
 import com.tombad8900.cinemastreamnative.tmdb.TmdbHomeScreen
 import com.tombad8900.cinemastreamnative.tmdb.TmdbMedia
 import com.tombad8900.cinemastreamnative.tmdb.TmdbDetailsScreen
+import com.tombad8900.cinemastreamnative.tmdb.TmdbPerson
+import com.tombad8900.cinemastreamnative.tmdb.TmdbCollection
+import com.tombad8900.cinemastreamnative.tmdb.TmdbLibraryBrowseScreen
+import com.tombad8900.cinemastreamnative.tmdb.TmdbPersonDetailsScreen
+import com.tombad8900.cinemastreamnative.tmdb.TmdbCollectionDetailsScreen
 
 import com.tombad8900.cinemastreamnative.tmdb.TmdbSettingsScreen
 
@@ -125,6 +130,8 @@ private fun CinemaStreamApp(
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var selectedMedia by remember { mutableStateOf<TmdbMedia?>(null) }
+    var selectedPerson by remember { mutableStateOf<TmdbPerson?>(null) }
+    var selectedCollection by remember { mutableStateOf<TmdbCollection?>(null) }
     var visitedTabs by remember { mutableStateOf(setOf(0)) }
 
     LaunchedEffect(selectedTab) {
@@ -145,16 +152,28 @@ private fun CinemaStreamApp(
     var browserEpisode by remember { mutableIntStateOf(-1) }
     var sourcePickerRequest by remember { mutableIntStateOf(0) }
 
-    BackHandler(enabled = selectedMedia != null || selectedTab != 0) {
-        if (selectedMedia != null) {
-            selectedMedia = null
-        } else {
-            selectedTab = 0
+    BackHandler(
+        enabled = selectedMedia != null ||
+            selectedPerson != null ||
+            selectedCollection != null ||
+            selectedTab != 0
+    ) {
+        when {
+            selectedMedia != null -> selectedMedia = null
+            selectedPerson != null -> selectedPerson = null
+            selectedCollection != null -> selectedCollection = null
+            else -> selectedTab = 0
         }
     }
 
     val favorites = remember { mutableStateListOf<MediaItem>() }
     val watched = remember { mutableStateListOf<MediaItem>() }
+    val watchLater = remember {
+        mutableStateListOf<TmdbMedia>().apply {
+            addAll(WatchLaterStore.load(appContext))
+        }
+    }
+
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         MaterialTheme(
@@ -244,8 +263,8 @@ private fun CinemaStreamApp(
                         Column(
                             Modifier
                                 .fillMaxSize()
-                                .graphicsLayer { alpha = if (selectedTab == 2 && selectedMedia == null) 1f else 0f }
-                                .zIndex(if (selectedTab == 2 && selectedMedia == null) 1f else 0f)
+                                .graphicsLayer { alpha = if (selectedTab == 2 && selectedMedia == null && selectedPerson == null && selectedCollection == null) 1f else 0f }
+                                .zIndex(if (selectedTab == 2 && selectedMedia == null && selectedPerson == null && selectedCollection == null) 1f else 0f)
                                 .verticalScroll(libraryScrollState)
                                 .padding(horizontal = 18.dp)
                         ) {
@@ -253,7 +272,16 @@ private fun CinemaStreamApp(
                             Spacer(Modifier.height(10.dp))
                             Text(tabs[2], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(18.dp))
-                            LibraryScreen(favorites, watched)
+                            LibraryScreen(favorites, watched, watchLater) {
+                                WatchLaterStore.save(appContext, watchLater)
+                            }
+
+                            Spacer(Modifier.height(22.dp))
+
+                            TmdbLibraryBrowseScreen(
+                                onPersonClick = { selectedPerson = it },
+                                onCollectionClick = { selectedCollection = it }
+                            )
                             Spacer(Modifier.height(28.dp))
                         }
                     }
@@ -325,12 +353,38 @@ private fun CinemaStreamApp(
                             Modifier
                                 .fillMaxSize()
                                 .background(Background)
+                                .zIndex(10f)
                                 .padding(horizontal = 18.dp)
                         ) {
                             Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(10.dp))
                             Text(tabs[selectedTab], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(18.dp))
+                            val currentMedia = selectedMedia!!
+                            val isInWatchLater = watchLater.any {
+                                it.id == currentMedia.id && it.mediaType == currentMedia.mediaType
+                            }
+                            Button(
+                                onClick = {
+                                    if (isInWatchLater) {
+                                        watchLater.removeAll {
+                                            it.id == currentMedia.id && it.mediaType == currentMedia.mediaType
+                                        }
+                                    } else {
+                                        watchLater.add(currentMedia)
+                                    }
+                                    WatchLaterStore.save(appContext, watchLater)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Gold),
+                                shape = RoundedCornerShape(13.dp)
+                            ) {
+                                Text(
+                                    if (isInWatchLater) "إزالة من مشاهدة لاحقًا" else "إضافة إلى مشاهدة لاحقًا",
+                                    color = Color.Black
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
                             TmdbDetailsScreen(
                                 media = selectedMedia!!,
                                 onBack = { selectedMedia = null },
@@ -345,6 +399,58 @@ private fun CinemaStreamApp(
                                     browserEpisode = episode
                                     selectedMedia = null
                                     selectedTab = 4
+                                }
+                            )
+                        }
+                    }
+
+                    if (selectedPerson != null) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Background)
+                                .zIndex(10f)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text(
+                                "C I N E M A S T R E A M",
+                                color = Gold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            TmdbPersonDetailsScreen(
+                                person = selectedPerson!!,
+                                onBack = { selectedPerson = null },
+                                onMediaClick = {
+                                    selectedPerson = null
+                                    selectedMedia = it
+                                }
+                            )
+                        }
+                    }
+
+                    if (selectedCollection != null) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Background)
+                                .zIndex(10f)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text(
+                                "C I N E M A S T R E A M",
+                                color = Gold,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            TmdbCollectionDetailsScreen(
+                                collection = selectedCollection!!,
+                                onBack = { selectedCollection = null },
+                                onMediaClick = {
+                                    selectedCollection = null
+                                    selectedMedia = it
                                 }
                             )
                         }
@@ -619,11 +725,14 @@ private fun MediaCard(
 @Composable
 private fun LibraryScreen(
     favorites: MutableList<MediaItem>,
-    watched: MutableList<MediaItem>
+    watched: MutableList<MediaItem>,
+    watchLater: MutableList<TmdbMedia>,
+    onWatchLaterChange: () -> Unit
 ) {
     var section by remember { mutableStateOf("قائمتي") }
+
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("قائمتي", "شاهدتها").forEach {
+        listOf("قائمتي", "شاهدتها", "مشاهدة لاحقًا").forEach {
             FilterChip(
                 selected = section == it,
                 onClick = { section = it },
@@ -631,21 +740,68 @@ private fun LibraryScreen(
             )
         }
     }
+
     Spacer(Modifier.height(15.dp))
-    val items = if (section == "قائمتي") favorites.toList() else watched.toList()
-    if (items.isEmpty()) {
-        Surface(Modifier.fillMaxWidth(), color = Panel, shape = RoundedCornerShape(18.dp)) {
-            Column(Modifier.padding(22.dp)) {
-                Text("مكتبتك تبدأ من هنا", color = Gold, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Text("أضف الأعمال إلى قائمتك من قسم الاستكشاف.", color = Muted, fontSize = 13.sp)
+
+    if (section == "مشاهدة لاحقًا") {
+        if (watchLater.isEmpty()) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = Panel,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(Modifier.padding(22.dp)) {
+                    Text("قائمة مشاهدة لاحقًا فارغة", color = Gold, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("أضف الأفلام والمسلسلات من صفحة تفاصيل العمل.", color = Muted, fontSize = 13.sp)
+                }
+            }
+        } else {
+            watchLater.toList().forEach { media ->
+                Surface(
+                    Modifier.fillMaxWidth().padding(bottom = 9.dp),
+                    color = Panel,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(13.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(media.title, color = Color.White, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${if (media.mediaType == "tv") "مسلسل" else "فيلم"} • ${media.year}",
+                                color = Muted,
+                                fontSize = 12.sp
+                            )
+                        }
+                        TextButton(onClick = {
+                            watchLater.removeAll {
+                                it.id == media.id && it.mediaType == media.mediaType
+                            }
+                            onWatchLaterChange()
+                        }) {
+                            Text("إزالة", color = Gold)
+                        }
+                    }
+                }
             }
         }
     } else {
-        items.forEach { item -> MediaCard(item, favorites, watched) }
+        val items = if (section == "قائمتي") favorites.toList() else watched.toList()
+        if (items.isEmpty()) {
+            Surface(Modifier.fillMaxWidth(), color = Panel, shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(22.dp)) {
+                    Text("مكتبتك تبدأ من هنا", color = Gold, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("أضف الأعمال إلى قائمتك من قسم الاستكشاف.", color = Muted, fontSize = 13.sp)
+                }
+            }
+        } else {
+            items.forEach { item -> MediaCard(item, favorites, watched) }
+        }
     }
 }
-
 @Composable
 private fun IptvScreen(channels: MutableList<Channel>) {
     var playlistText by remember { mutableStateOf("") }
