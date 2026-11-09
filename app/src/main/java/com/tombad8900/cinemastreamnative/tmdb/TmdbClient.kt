@@ -21,7 +21,8 @@ data class TmdbMedia(
     val overview: String,
     val posterPath: String?,
     val rating: Double,
-    val popularity: Double
+    val popularity: Double,
+    val backdropPath: String? = null
 ) {
     val posterUrl: String?
         get() = posterPath?.let {
@@ -38,7 +39,8 @@ data class TmdbHomeData(
     val trending: List<TmdbMedia>,
     val popular: List<TmdbMedia>,
     val topRated: List<TmdbMedia>,
-    val companies: List<TmdbCompanySection> = emptyList()
+    val companies: List<TmdbCompanySection> = emptyList(),
+    val extras: List<TmdbCompanySection> = emptyList()
 )
 
 
@@ -265,7 +267,8 @@ object TmdbClient {
                     posterPath = item.optString("poster_path")
                         .takeIf { it.isNotBlank() && it != "null" },
                     rating = item.optDouble("vote_average", 0.0),
-                    popularity = item.optDouble("popularity", 0.0)
+                    popularity = item.optDouble("popularity", 0.0),
+                    backdropPath = item.optString("backdrop_path").takeIf { it.isNotBlank() && it != "null" }
                 )
             )
         }
@@ -391,6 +394,24 @@ object TmdbClient {
         }
     }
 
+    private fun fetchExtraSections(apiKey: String, filter: String): List<TmdbCompanySection> {
+        val out = mutableListOf<TmdbCompanySection>()
+        fun add(name: String, load: () -> List<TmdbMedia>) {
+            runCatching { load() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { out.add(TmdbCompanySection(name, it)) }
+        }
+        if (filter != "tv") {
+            add("يُعرض الآن في السينما") { fetchList(apiKey, "/movie/now_playing", "movie") }
+            add("قريبًا في السينما") { fetchList(apiKey, "/movie/upcoming", "movie") }
+        }
+        if (filter != "movie") {
+            add("مسلسلات تُعرض اليوم") { fetchList(apiKey, "/tv/airing_today", "tv") }
+            listOf("Netflix" to "213", "HBO" to "49", "Apple TV+" to "2552", "Prime Video" to "1024", "Disney+" to "2739").forEach { (n, id) ->
+                add("مسلسلات $n") { parseResults(request("/discover/tv", apiKey, mapOf("with_networks" to id, "sort_by" to "popularity.desc")), "tv") }
+            }
+        }
+        return out
+    }
+
     suspend fun fetchHome(
         context: Context,
         apiKey: String,
@@ -420,12 +441,14 @@ object TmdbClient {
                 )
             }
             val companiesJob = async { fetchCompanySections(apiKey, type) }
+            val extrasJob = async { fetchExtraSections(apiKey, type) }
 
             TmdbHomeData(
                 trending = trendingJob.await(),
                 popular = popularJob.await(),
                 topRated = topRatedJob.await(),
-                companies = companiesJob.await()
+                companies = companiesJob.await(),
+                extras = extrasJob.await()
             )
         }
 

@@ -1,5 +1,6 @@
 package com.tombad8900.cinemastreamnative.browser
 
+import com.tombad8900.cinemastreamnative.security.AdBlockStore
 import android.annotation.SuppressLint
 import android.net.Uri
 import android.os.Handler
@@ -68,6 +69,7 @@ private fun isBlockedAdUrl(rawUrl: String, pageUrl: String): Boolean {
     val host = uri.host?.lowercase().orEmpty()
     if (host.isBlank()) return false
     if (blockedAdHosts.any { host == it || host.endsWith(".$it") }) return true
+    if (AdBlockStore.isBlocked(host)) return true
     val pageHost = runCatching { Uri.parse(pageUrl).host?.lowercase() }.getOrNull()
     if (!pageHost.isNullOrBlank() && host == pageHost) return false
     val path = (uri.path.orEmpty() + "?" + uri.encodedQuery.orEmpty()).lowercase()
@@ -145,6 +147,9 @@ fun BrowserScreen(
     sourcePickerRequest: Int = 0,
     modifier: Modifier = Modifier
 ) {
+    val adBlockContext = LocalContext.current
+    remember(adBlockContext) { AdBlockStore.load(adBlockContext) }
+
     val context = LocalContext.current
     val captures = remember { mutableStateListOf<BrowserCapture>() }
     val subtitleUrls = remember { mutableStateListOf<String>() }

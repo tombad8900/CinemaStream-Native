@@ -11,6 +11,7 @@ import com.tombad8900.cinemastreamnative.tmdb.TmdbSettingsScreen
 
 import com.tombad8900.cinemastreamnative.subtitle.SubtitleSettingsScreen
 import com.tombad8900.cinemastreamnative.subtitle.SubtitleProviderSettingsScreen
+import com.tombad8900.cinemastreamnative.security.AdBlockSettingsScreen
 
 import android.os.Bundle
 import android.content.Intent
@@ -663,6 +664,9 @@ private fun SettingsScreen() {
     SectionTitle("إعدادات الترجمة")
     SubtitleSettingsScreen()
     SubtitleProviderSettingsScreen()
+    Spacer(Modifier.height(18.dp))
+    SectionTitle("حظر الإعلانات")
+    AdBlockSettingsScreen()
 
     Spacer(Modifier.height(18.dp))
     SectionTitle("حول التطبيق")
