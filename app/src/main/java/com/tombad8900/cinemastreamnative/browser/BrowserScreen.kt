@@ -1,31 +1,37 @@
 package com.tombad8900.cinemastreamnative.browser
 
-import androidx.compose.foundation.background
-import androidx.compose.ui.graphics.Color
-
 import android.annotation.SuppressLint
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.net.Uri
+import java.io.ByteArrayInputStream
 
 private data class BrowserCapture(
     val url: String,
     val kind: String,
     val playable: Boolean,
+    val isArabicSubtitle: Boolean = false,
     val headers: Map<String, String> = emptyMap()
 )
 
@@ -46,84 +52,100 @@ private fun classifyResource(url: String): BrowserCapture? {
 
     if (uri.scheme != "http" && uri.scheme != "https") return null
 
+    val isArabicSub = listOf("ar", "arabic", "عربي", "ara").any { hint -> hint in path || hint in query || hint in full }
     val subtitleHint = listOf(
         ".srt", ".vtt", ".ass", ".ssa", ".ttml", ".dfxp",
-        "subtitle", "subtitles", "subtitel", "captions",
-        "closedcaption", "texttrack", "/sub/"
-    ).any { it in path || it in query || it in full }
+        "subtitle", "subtitles", "captions", "texttrack"
+    ).any { hint -> hint in path || hint in query || hint in full }
 
     if (subtitleHint) {
-        return BrowserCapture(url, "ترجمة / مسار نصي", false)
+        val label = if (isArabicSub) "ترجمة عربية 💬 (مكتشفة)" else "ترجمة جديدة"
+        return BrowserCapture(url, label, false, isArabicSub)
     }
 
-    val videoHint = listOf(
-        ".m3u8", ".mpd", ".mp4", ".m4v", ".webm", ".mov",
-        ".mkv", ".ts", ".m4s", ".cmfv", ".cmfa"
-    ).any { path.endsWith(it) }
+    val videoExtensions = listOf(".m3u8", ".mpd", ".mp4", ".mkv", ".webm")
+    val hasVideoExt = videoExtensions.any { ext -> path.endsWith(ext) || query.contains(ext) }
 
-    val streamingHint = listOf(
-        "manifest", "playlist", "master", "videoplayback",
-        "mime=video", "type=video", "format=m3u8",
-        "hls", "dash", "googlevideo"
-    ).any { it in full }
+    val videoKeywords = listOf(
+        "master.m3u8", "index.m3u8", "playlist.m3u8", "manifest",
+        "hls", "dash", "stream", "video", "embed", "player"
+    )
+    val hasVideoKeyword = videoKeywords.any { kw -> kw in path || kw in query || kw in full }
+    val isSegment = path.endsWith(".ts") || query.contains(".ts") || path.endsWith(".m4s") || query.contains(".m4s")
 
-    val mediaTypeHint = listOf(
-        "video/", "application/vnd.apple.mpegurl",
-        "application/x-mpegurl", "application/dash+xml"
-    ).any { it in full }
+    val isMediaLike = !isSegment && (hasVideoExt || (hasVideoKeyword && (full.contains(".m3u8") || full.contains(".mpd") || full.contains(".mp4"))))
 
-    if (!videoHint && !streamingHint && !mediaTypeHint) return null
-
-    val segment = listOf(".ts", ".m4s", ".cmfv", ".cmfa").any {
-        path.endsWith(it)
+    if (isMediaLike) {
+        val label = when {
+            full.contains(".m3u8") || full.contains("hls") -> "بث HLS (m3u8)"
+            full.contains(".mpd") || full.contains("dash") -> "بث DASH (mpd)"
+            full.contains(".mp4") -> "فيديو MP4"
+            else -> "فيديو مكتشف"
+        }
+        return BrowserCapture(url, label, true)
     }
 
-    if (segment) {
-        return BrowserCapture(url, "جزء من بث فيديو - ليس رابط تشغيل مستقل", false)
-    }
-
-    val kind = when {
-        ".m3u8" in path || "mpegurl" in full -> "فيديو HLS"
-        ".mpd" in path || "dash+xml" in full -> "فيديو DASH"
-        else -> "رابط فيديو مرشح للتشغيل"
-    }
-
-    return BrowserCapture(url, kind, true)
+    return null
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun BrowserScreen(
     onPlayUrl: (String, String) -> Unit,
-    onPlayCaptured: (String, String, Map<String, String>, List<String>) -> Unit,
-    sources: List<com.tombad8900.cinemastreamnative.sources.StreamSource>,
-    media: com.tombad8900.cinemastreamnative.tmdb.TmdbMedia?,
-    season: Int,
-    episode: Int,
-    sourcePickerRequest: Int,
+    onPlayCaptured: (
+        streamUrl: String,
+        title: String,
+        headers: Map<String, String>,
+        subtitles: List<String>
+    ) -> Unit,
+    sources: List<com.tombad8900.cinemastreamnative.sources.StreamSource> = emptyList(),
+    media: com.tombad8900.cinemastreamnative.tmdb.TmdbMedia? = null,
+    season: Int = 1,
+    episode: Int = 1,
+    sourcePickerRequest: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val captures = remember { mutableStateListOf<BrowserCapture>() }
     val subtitleUrls = remember { mutableStateListOf<String>() }
-    val handler = remember { Handler(Looper.getMainLooper()) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     var address by remember { mutableStateOf("") }
     var pageTitle by remember { mutableStateOf("CinemaStream") }
-    var browser by remember { mutableStateOf<WebView?>(null) }
-
     var showSources by remember { mutableStateOf(false) }
+    var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+    var isFullScreen by remember { mutableStateOf(false) }
 
-    androidx.compose.runtime.LaunchedEffect(media?.id, season, episode) {
-        if (media != null) {
-            captures.clear()
-            showSources = true
+    val playTitle = remember(media, pageTitle) {
+        media?.originalTitle?.takeIf { it.isNotBlank() }
+            ?: media?.title?.takeIf { it.isNotBlank() }
+            ?: pageTitle
+    }
+
+    val adDomains = remember {
+        listOf(
+            "popads", "popcash", "adsterra", "doubleclick",
+            "googlesyndication", "exoclick", "bet365", "juicyads",
+            "ad-delivery", "onclickads", "propellerads", "adtrafficquality",
+            "ad-shield", "popunder", "banner", "redirect", "hokihoki", "daftar"
+        )
+    }
+
+    fun addCapture(capture: BrowserCapture) {
+        mainHandler.post {
+            if (captures.none { it.url == capture.url }) {
+                if (captures.size >= 100) captures.removeAt(0)
+                captures.add(capture)
+            }
         }
     }
 
-    androidx.compose.runtime.LaunchedEffect(sourcePickerRequest) {
-        if (sourcePickerRequest > 0 && media != null) {
-            showSources = true
+    fun addSubtitle(url: String) {
+        mainHandler.post {
+            if (subtitleUrls.size < 50 && url !in subtitleUrls) {
+                subtitleUrls.add(0, url)
+            }
         }
     }
 
@@ -150,32 +172,29 @@ fun BrowserScreen(
         subtitleUrls.clear()
         address = url
         showSources = false
-        browser?.loadUrl(url)
+        webViewInstance?.loadUrl(url)
     }
 
-    fun addSubtitle(url: String) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return
-        handler.post {
-            if (subtitleUrls.size < 50 && url !in subtitleUrls) {
-                subtitleUrls.add(url)
-            }
+    LaunchedEffect(media?.id, season, episode) {
+        if (media != null) {
+            captures.clear()
+            subtitleUrls.clear()
+            showSources = true
         }
     }
 
-    fun addCapture(item: BrowserCapture) {
-        if (!item.url.startsWith("http://") &&
-            !item.url.startsWith("https://")) return
-
-        handler.post {
-            if (captures.none { it.url == item.url }) {
-                if (captures.size >= 100) captures.removeAt(0)
-                captures.add(item)
-            }
+    LaunchedEffect(sourcePickerRequest) {
+        if (sourcePickerRequest > 0 && media != null) {
+            showSources = true
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().background(Color(0xFF202020))) {
-
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF202020))
+            .padding(12.dp)
+    ) {
         if (showSources) {
             val availableSources = sources.filter {
                 if (media?.mediaType.equals("tv", ignoreCase = true)) {
@@ -185,21 +204,23 @@ fun BrowserScreen(
                 }
             }
 
-            androidx.compose.material3.AlertDialog(
+            AlertDialog(
                 onDismissRequest = { showSources = false },
-                title = { Text("مصادر التشغيل") },
+                title = { Text("اختر مصدر البث") },
                 text = {
                     LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                         if (media == null) {
-                            item { Text("اختر فيلمًا أو حلقة أولًا.") }
+                            item { Text("لا يوجد محتوى محدد حالياً.") }
                         } else if (availableSources.isEmpty()) {
                             item {
-                                Text("لا توجد مصادر مفعّلة مناسبة لهذا العمل. تحقق من ملف المصادر المستورد.")
+                                Text("لا تتوفر مصادر لهذه الفئة حالياً. يمكنك فتح الإعدادات وإضافة مصادر جديدة.")
                             }
                         } else {
                             items(availableSources, key = { it.id }) { source ->
-                                androidx.compose.material3.OutlinedButton(
-                                    onClick = { openSource(source) },
+                                OutlinedButton(
+                                    onClick = {
+                                        openSource(source)
+                                    },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text(source.name)
@@ -209,16 +230,27 @@ fun BrowserScreen(
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(
-                        onClick = { showSources = false }
-                    ) {
+                    TextButton(onClick = { showSources = false }) {
                         Text("إغلاق")
                     }
                 }
             )
         }
 
-Row(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(playTitle, style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1, modifier = Modifier.weight(1f))
+            Button(onClick = { showSources = true }) {
+                Text("المصادر")
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -238,157 +270,169 @@ Row(
                     focusedPlaceholderColor = Color.DarkGray,
                     unfocusedPlaceholderColor = Color.DarkGray
                 ),
-                placeholder = { Text("أدخل رابط المصدر") }
+                placeholder = { Text("رابط الصفحة") }
             )
 
             Button(
                 onClick = {
                     val value = address.trim()
                     if (value.isNotBlank()) {
-                        val url = if (
-                            value.startsWith("http://") ||
-                            value.startsWith("https://")
-                        ) value else "https://$value"
-
+                        val url = if (value.startsWith("http://") || value.startsWith("https://")) value else "https://$value"
                         captures.clear()
-                        browser?.loadUrl(url)
+                        subtitleUrls.clear()
+                        webViewInstance?.loadUrl(url)
                     }
                 },
-                modifier = Modifier.align(androidx.compose.ui.Alignment.CenterVertically)
+                modifier = Modifier.align(Alignment.CenterVertically)
             ) {
-                Text("فتح")
+                Text("انتقال")
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            TextButton(onClick = { if (browser?.canGoBack() == true) browser?.goBack() }) {
-                Text("رجوع")
-            }
-            TextButton(onClick = { if (browser?.canGoForward() == true) browser?.goForward() }) {
-                Text("تقدم")
-            }
-            TextButton(onClick = { browser?.reload() }) {
-                Text("تحديث")
-            }
-        }
+        Spacer(Modifier.height(8.dp))
 
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-            factory = {
-                WebView(context).apply {
-                    browser = this
-
-                    // اختبار تشخيصي مؤقت لمشكلة الرسم
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    webViewInstance = this
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
                     setBackgroundColor(android.graphics.Color.WHITE)
-                    setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
 
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.mediaPlaybackRequiresUserGesture = false
-                    settings.setSupportMultipleWindows(false)
-                    settings.javaScriptCanOpenWindowsAutomatically = false
-                    settings.allowFileAccess = false
-                    settings.allowContentAccess = false
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        mediaPlaybackRequiresUserGesture = false
+                        setSupportMultipleWindows(false)
+                        javaScriptCanOpenWindowsAutomatically = false
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
+                        userAgentString =
+                            "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    }
 
                     addJavascriptInterface(
-                        BrowserBridge { url ->
-                            addSubtitle(url)
-                            addCapture(
-                                BrowserCapture(
-                                    url,
-                                    "ترجمة مرتبطة بمشغل الصفحة",
-                                    false
-                                )
-                            )
+                        BrowserBridge { subUrl ->
+                            addSubtitle(subUrl)
+                            addCapture(BrowserCapture(subUrl, "ترجمة عربية 💬", false, true))
                         },
                         "CinemaCapture"
                     )
 
                     webChromeClient = object : WebChromeClient() {
-                        override fun onReceivedTitle(
+                        override fun onReceivedTitle(view: WebView?, title: String?) {
+                            title?.takeIf { it.isNotBlank() }?.let { pageTitle = it }
+                        }
+
+                        override fun onCreateWindow(
                             view: WebView?,
-                            title: String?
-                        ) {
-                            if (!title.isNullOrBlank()) pageTitle = title
+                            isDialog: Boolean,
+                            isUserGesture: Boolean,
+                            resultMsg: Message?
+                        ): Boolean {
+                            return false
+                        }
+
+                        override fun onPermissionRequest(request: PermissionRequest?) {
+                            request?.deny()
+                        }
+
+                        override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
+                            isFullScreen = true
+                        }
+
+                        override fun onHideCustomView() {
+                            isFullScreen = false
                         }
                     }
 
                     webViewClient = object : WebViewClient() {
-                        override fun onPageStarted(
+                        override fun shouldOverrideUrlLoading(
                             view: WebView?,
-                            url: String?,
-                            favicon: android.graphics.Bitmap?
-                        ) {
-                            if (!url.isNullOrBlank()) {
-                                address = url
-                                captures.clear()
-                                subtitleUrls.clear()
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            val reqUrl = request?.url?.toString()?.lowercase() ?: return false
+                            if (adDomains.any { reqUrl.contains(it) }) {
+                                return true
                             }
+                            return false
                         }
 
                         override fun shouldInterceptRequest(
                             view: WebView?,
-                            request: WebResourceRequest?
-                        ): android.webkit.WebResourceResponse? {
-                            request?.let { req ->
-                                val url = req.url.toString()
-                                classifyResource(url)?.let { item ->
-                                    val allowed = setOf(
-                                        "user-agent", "referer", "origin",
-                                        "cookie", "authorization"
-                                    )
-                                    val headers = req.requestHeaders
-                                        .filterKeys { it.lowercase() in allowed }
-                                        .toMutableMap()
+                            req: WebResourceRequest?
+                        ): WebResourceResponse? {
+                            val url = req?.url?.toString() ?: return null
+                            val lowerUrl = url.lowercase()
 
-                                    if (headers.keys.none { it.equals("User-Agent", true) }) {
-                                        view?.settings?.userAgentString?.let {
-                                            headers["User-Agent"] = it
-                                        }
+                            if (adDomains.any { lowerUrl.contains(it) }) {
+                                return WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                            }
+
+                            classifyResource(url)?.let { item ->
+                                val allowed = setOf(
+                                    "user-agent", "referer", "origin",
+                                    "cookie", "authorization"
+                                )
+                                val headers = (req.requestHeaders ?: emptyMap())
+                                    .filterKeys { it.lowercase() in allowed }
+                                    .toMutableMap()
+
+                                if (headers.keys.none { it.equals("User-Agent", true) }) {
+                                    view?.settings?.userAgentString?.let {
+                                        headers["User-Agent"] = it
                                     }
-                                    if (headers.keys.none { it.equals("Referer", true) } &&
-                                        address.startsWith("http", true)) {
-                                        headers["Referer"] = address
-                                    }
-                                    addCapture(item.copy(headers = headers))
-                                    if (!item.playable) addSubtitle(url)
                                 }
+                                if (headers.keys.none { it.equals("Referer", true) } &&
+                                    address.startsWith("http", true)) {
+                                    headers["Referer"] = address
+                                }
+                                addCapture(item.copy(headers = headers))
+                                if (!item.playable) addSubtitle(url)
                             }
                             return null
                         }
 
-                        override fun onPageFinished(
-                            view: WebView?,
-                            url: String?
-                        ) {
+                        override fun onPageFinished(view: WebView?, url: String?) {
                             view?.evaluateJavascript(
                                 """
                                 (function() {
-                                  function scan() {
-                                    document.querySelectorAll('video track[src]').forEach(function(t) {
-                                      if (window.CinemaCapture) {
-                                        window.CinemaCapture.subtitle(t.src);
-                                      }
-                                    });
-                                  }
-                                  scan();
-                                  if (!window.__cinemaTrackObserver && document.documentElement) {
-                                    window.__cinemaTrackObserver = new MutationObserver(scan);
-                                    window.__cinemaTrackObserver.observe(
-                                      document.documentElement,
-                                      {childList:true, subtree:true, attributes:true, attributeFilter:['src']}
-                                    );
-                                  }
+                                    window.open = function() { return null; };
+                                    window.alert = function() { return true; };
+                                    window.confirm = function() { return true; };
+                                    window.prompt = function() { return null; };
+                                    if (window.Notification) {
+                                        window.Notification.requestPermission = function() {
+                                            return Promise.resolve('denied');
+                                        };
+                                    }
+                                    function checkTracks() {
+                                        document.querySelectorAll('video track, track').forEach(function(t) {
+                                            var lang = (t.srclang || t.label || '').toLowerCase();
+                                            var src = t.src;
+                                            if (src && (lang.includes('ar') || lang.includes('arabic') || lang.includes('عربي') || src.includes('ar'))) {
+                                                if (window.CinemaCapture) {
+                                                    window.CinemaCapture.subtitle(src);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    checkTracks();
+                                    setInterval(checkTracks, 1500);
                                 })();
                                 """.trimIndent(),
                                 null
                             )
                         }
+                    }
+
+                    if (address.isNotBlank()) {
+                        loadUrl(address)
                     }
                 }
             },
@@ -397,7 +441,7 @@ Row(
 
         if (captures.isNotEmpty()) {
             Text(
-                "الروابط التي رصدها الكاشف",
+                "الروابط والترجمات العربية المكتشفة (انقر للتشغيل بالمشغل الأصلي 🎬)",
                 modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                 color = MaterialTheme.colorScheme.primary
             )
@@ -415,10 +459,11 @@ Row(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(item.kind, style = MaterialTheme.typography.labelMedium)
+                            Text(item.kind, style = MaterialTheme.typography.labelMedium, color = Color.White)
                             Text(
                                 item.url,
                                 style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray,
                                 maxLines = 2
                             )
                         }
@@ -428,13 +473,13 @@ Row(
                                 onClick = {
                                     onPlayCaptured(
                                         item.url,
-                                        pageTitle,
+                                        playTitle,
                                         item.headers,
                                         subtitleUrls.distinct()
                                     )
                                 }
                             ) {
-                                Text("تشغيل")
+                                Text("تشغيل بمشغل التطبيق")
                             }
                         }
                     }

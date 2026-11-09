@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 data class TmdbMedia(
     val id: Int,
     val title: String,
+    val originalTitle: String = "",
     val mediaType: String,
     val year: String,
     val overview: String,
@@ -239,6 +240,11 @@ object TmdbClient {
             } else {
                 item.optString("name")
             }
+            val originalTitle = if (type == "movie") {
+                item.optString("original_title").ifBlank { title }
+            } else {
+                item.optString("original_name").ifBlank { title }
+            }
 
             if (title.isBlank()) continue
 
@@ -252,6 +258,7 @@ object TmdbClient {
                 TmdbMedia(
                     id = item.optInt("id"),
                     title = title,
+                    originalTitle = originalTitle,
                     mediaType = type,
                     year = date.take(4),
                     overview = item.optString("overview"),
