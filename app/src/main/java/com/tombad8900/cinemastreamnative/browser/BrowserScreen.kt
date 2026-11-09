@@ -26,6 +26,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
+import android.app.Activity
+import android.webkit.JsResult
+import android.webkit.JsPromptResult
 
 private data class BrowserCapture(
     val url: String,
@@ -34,6 +37,30 @@ private data class BrowserCapture(
     val isArabicSubtitle: Boolean = false,
     val headers: Map<String, String> = emptyMap()
 )
+
+
+private val blockedAdHosts = setOf(
+    "doubleclick.net", "googlesyndication.com",
+    "googleadservices.com", "adservice.google.com",
+    "adnxs.com", "taboola.com", "outbrain.com",
+    "popads.net", "popcash.net", "propellerads.com",
+    "exoclick.com", "juicyads.com", "trafficjunky.com",
+    "adsterra.com", "adform.net", "criteo.com",
+    "amazon-adsystem.com"
+)
+
+private fun isBlockedAdUrl(rawUrl: String, pageUrl: String): Boolean {
+    val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return false
+    if (uri.scheme != "http" && uri.scheme != "https") return true
+    if (classifyResource(rawUrl) != null) return false
+    val host = uri.host?.lowercase().orEmpty()
+    if (host.isBlank()) return false
+    if (blockedAdHosts.any { host == it || host.endsWith(".$it") }) return true
+    val pageHost = runCatching { Uri.parse(pageUrl).host?.lowercase() }.getOrNull()
+    if (!pageHost.isNullOrBlank() && host == pageHost) return false
+    val path = (uri.path.orEmpty() + "?" + uri.encodedQuery.orEmpty()).lowercase()
+    return listOf("/adserver/", "/popunder/", "/clickunder/").any { it in path }
+}
 
 private class BrowserBridge(
     private val onSubtitle: (String) -> Unit
@@ -116,20 +143,13 @@ fun BrowserScreen(
     var showSources by remember { mutableStateOf(false) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
+    var fullScreenCustomView by remember { mutableStateOf<android.view.View?>(null) }
+    var fullScreenCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
     val playTitle = remember(media, pageTitle) {
         media?.originalTitle?.takeIf { it.isNotBlank() }
             ?: media?.title?.takeIf { it.isNotBlank() }
             ?: pageTitle
-    }
-
-    val adDomains = remember {
-        listOf(
-            "popads", "popcash", "adsterra", "doubleclick",
-            "googlesyndication", "exoclick", "bet365", "juicyads",
-            "ad-delivery", "onclickads", "propellerads", "adtrafficquality",
-            "ad-shield", "popunder", "banner", "redirect", "hokihoki", "daftar"
-        )
     }
 
     fun addCapture(capture: BrowserCapture) {
@@ -308,7 +328,7 @@ fun BrowserScreen(
                         javaScriptEnabled = true
                         domStorageEnabled = true
                         mediaPlaybackRequiresUserGesture = false
-                        setSupportMultipleWindows(false)
+                        setSupportMultipleWindows(true)
                         javaScriptCanOpenWindowsAutomatically = false
                         useWideViewPort = true
                         loadWithOverviewMode = true
@@ -335,18 +355,110 @@ fun BrowserScreen(
                             isUserGesture: Boolean,
                             resultMsg: Message?
                         ): Boolean {
-                            return false
+                            if (!isUserGesture || resultMsg == null) return false
+                            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                            val popup = WebView(ctx)
+                            popup.settings.javaScriptEnabled = true
+                            popup.settings.domStorageEnabled = true
+                            popup.settings.javaScriptCanOpenWindowsAutomatically = false
+                            popup.settings.userAgentString = view?.settings?.userAgentString.orEmpty()
+
+                            var handled = false
+                            fun route(target: String) {
+                                if (handled) return
+                                handled = true
+                                if (!isBlockedAdUrl(target, address)) {
+                                    mainHandler.post {
+                                        address = target
+                                        webViewInstance?.loadUrl(target)
+                                    }
+                                }
+                                popup.post {
+                                    runCatching {
+                                        popup.stopLoading()
+                                        popup.destroy()
+                                    }
+                                }
+                            }
+
+                            popup.webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean {
+                                    val target = request?.url?.toString() ?: return true
+                                    route(target)
+                                    return true
+                                }
+
+                                override fun onPageStarted(
+                                    view: WebView?,
+                                    url: String?,
+                                    favicon: android.graphics.Bitmap?
+                                ) {
+                                    if (!url.isNullOrBlank() &&
+                                        (url.startsWith("https://") || url.startsWith("http://"))) {
+                                        route(url)
+                                    }
+                                }
+                            }
+
+                            transport.webView = popup
+                            resultMsg.sendToTarget()
+                            return true
                         }
 
                         override fun onPermissionRequest(request: PermissionRequest?) {
                             request?.deny()
                         }
 
-                        override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
+                        override fun onJsAlert(
+                            view: WebView?, url: String?, message: String?, result: JsResult?
+                        ): Boolean {
+                            result?.confirm()
+                            return true
+                        }
+
+                        override fun onJsConfirm(
+                            view: WebView?, url: String?, message: String?, result: JsResult?
+                        ): Boolean {
+                            result?.cancel()
+                            return true
+                        }
+
+                        override fun onJsPrompt(
+                            view: WebView?, url: String?, message: String?,
+                            defaultValue: String?, result: JsPromptResult?
+                        ): Boolean {
+                            result?.cancel()
+                            return true
+                        }
+
+                        override fun onShowCustomView(
+                            view: android.view.View?, callback: CustomViewCallback?
+                        ) {
+                            if (view == null || fullScreenCustomView != null) {
+                                callback?.onCustomViewHidden()
+                                return
+                            }
+                            val activity = ctx as? Activity ?: return
+                            val decor = activity.window.decorView as? ViewGroup ?: return
+                            fullScreenCustomView = view
+                            fullScreenCallback = callback
+                            decor.addView(view, ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            ))
                             isFullScreen = true
                         }
 
                         override fun onHideCustomView() {
+                            fullScreenCustomView?.let { custom ->
+                                (custom.parent as? ViewGroup)?.removeView(custom)
+                            }
+                            fullScreenCustomView = null
+                            fullScreenCallback?.onCustomViewHidden()
+                            fullScreenCallback = null
                             isFullScreen = false
                         }
                     }
@@ -356,11 +468,8 @@ fun BrowserScreen(
                             view: WebView?,
                             request: WebResourceRequest?
                         ): Boolean {
-                            val reqUrl = request?.url?.toString()?.lowercase() ?: return false
-                            if (adDomains.any { reqUrl.contains(it) }) {
-                                return true
-                            }
-                            return false
+                            val target = request?.url?.toString() ?: return true
+                            return isBlockedAdUrl(target, view?.url ?: address)
                         }
 
                         override fun shouldInterceptRequest(
@@ -368,10 +477,12 @@ fun BrowserScreen(
                             req: WebResourceRequest?
                         ): WebResourceResponse? {
                             val url = req?.url?.toString() ?: return null
-                            val lowerUrl = url.lowercase()
-
-                            if (adDomains.any { lowerUrl.contains(it) }) {
-                                return WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                            if (isBlockedAdUrl(url, view?.url ?: address)) {
+                                return WebResourceResponse(
+                                    "text/plain", "UTF-8", 204, "No Content",
+                                    emptyMap<String, String>(),
+                                    ByteArrayInputStream(ByteArray(0))
+                                )
                             }
 
                             classifyResource(url)?.let { item ->
