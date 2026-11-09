@@ -28,11 +28,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.activity.compose.BackHandler
@@ -119,10 +122,21 @@ private fun CinemaStreamApp(
 ) {
     val tabs = listOf("الرئيسية", "استكشاف", "مكتبتي", "IPTV", "المتصفح", "الإعدادات")
     val symbols = listOf("⌂", "⌕", "♡", "▣", "◎", "⚙")
+
     var selectedTab by remember { mutableIntStateOf(0) }
     var selectedMedia by remember { mutableStateOf<TmdbMedia?>(null) }
+    var visitedTabs by remember { mutableStateOf(setOf(0)) }
+
+    LaunchedEffect(selectedTab) {
+        visitedTabs = visitedTabs + selectedTab
+    }
+
+    val homeScrollState = rememberScrollState()
+    val libraryScrollState = rememberScrollState()
+    val settingsScrollState = rememberScrollState()
 
     val appContext = androidx.compose.ui.platform.LocalContext.current
+
     var browserSources by remember {
         mutableStateOf<List<com.tombad8900.cinemastreamnative.sources.StreamSource>>(emptyList())
     }
@@ -130,6 +144,7 @@ private fun CinemaStreamApp(
     var browserSeason by remember { mutableIntStateOf(-1) }
     var browserEpisode by remember { mutableIntStateOf(-1) }
     var sourcePickerRequest by remember { mutableIntStateOf(0) }
+
     BackHandler(enabled = selectedMedia != null || selectedTab != 0) {
         if (selectedMedia != null) {
             selectedMedia = null
@@ -137,7 +152,6 @@ private fun CinemaStreamApp(
             selectedTab = 0
         }
     }
-
 
     val favorites = remember { mutableStateListOf<MediaItem>() }
     val watched = remember { mutableStateListOf<MediaItem>() }
@@ -159,7 +173,10 @@ private fun CinemaStreamApp(
                         tabs.forEachIndexed { index, label ->
                             NavigationBarItem(
                                 selected = selectedTab == index,
-                                onClick = { selectedMedia = null; selectedTab = index },
+                                onClick = {
+                                    selectedMedia = null
+                                    selectedTab = index
+                                },
                                 icon = { Text(symbols[index], fontSize = 20.sp) },
                                 label = { Text(label, fontSize = 10.sp) },
                                 colors = NavigationBarItemDefaults.colors(
@@ -174,111 +191,169 @@ private fun CinemaStreamApp(
                     }
                 }
             ) { padding ->
-                if (selectedTab == 3) {
-                    Column(
-                        Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .padding(horizontal = 18.dp)
-                    ) {
-                        Spacer(Modifier.height(22.dp))
-                        Text(
-                            "C I N E M A S T R E A M",
-                            color = Gold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            tabs[selectedTab],
-                            color = Color.White,
-                            fontSize = 29.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(Modifier.height(14.dp))
-                        IptvManagerScreen(
-                            onPlayUrl = onPlayUrl,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                } else {
-                    Column(
-                        Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .then(if (selectedTab == 1 || selectedTab == 4 || selectedMedia != null) Modifier else Modifier.verticalScroll(rememberScrollState()))
-                            .padding(horizontal = 18.dp)
-                    ) {
-                        Spacer(Modifier.height(22.dp))
-                        Text(
-                            "C I N E M A S T R E A M",
-                            color = Gold,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                tabs[selectedTab],
-                                color = Color.White,
-                                fontSize = 29.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(Modifier.height(18.dp))
-                        if (selectedMedia != null) {
-                    TmdbDetailsScreen(
-                        media = selectedMedia!!,
-                        onBack = { selectedMedia = null },
-                        onPlay = { season, episode ->
-                            browserSources =
-                                com.tombad8900.cinemastreamnative.sources.SourceStore
-                                    .load(appContext)
-                                    .filter { it.enabled && !it.hidden }
-                                    .sortedBy { it.priority }
 
-                            browserMedia = selectedMedia
-                            browserSeason = season
-                            browserEpisode = episode
-                            selectedMedia = null
-                            selectedTab = 4
-                        }
-                    )
-                } else when (selectedTab) {
-                            0 -> HomeScreen(
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .clipToBounds()
+                ) {
+
+                    if (0 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 0 && selectedMedia == null) 1f else 0f }
+                                .zIndex(if (selectedTab == 0 && selectedMedia == null) 1f else 0f)
+                                .verticalScroll(homeScrollState)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[0], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            HomeScreen(
                                 favorites.size,
                                 watched.size,
                                 onExplore = { selectedTab = 1 },
                                 onLibrary = { selectedTab = 2 },
                                 onPlayUrl = onPlayUrl,
-                    onMediaClick = { selectedMedia = it }
+                                onMediaClick = { selectedMedia = it }
                             )
-                            1 -> DiscoverScreen(favorites, watched, onMediaClick = { selectedMedia = it })
-                            2 -> LibraryScreen(favorites, watched)
-                            4 -> com.tombad8900.cinemastreamnative.browser.BrowserScreen(
-                                    onPlayUrl = onPlayUrl,
-                                    onPlayCaptured = onPlayCaptured,
-                                    sources = browserSources,
-                                    media = browserMedia,
-                                    season = browserSeason,
-                                    episode = browserEpisode,
-                                    sourcePickerRequest = sourcePickerRequest,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            5 -> SettingsScreen()
+                            Spacer(Modifier.height(28.dp))
                         }
-                        Spacer(Modifier.height(28.dp))
+                    }
+
+                    if (1 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 1 && selectedMedia == null) 1f else 0f }
+                                .zIndex(if (selectedTab == 1 && selectedMedia == null) 1f else 0f)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[1], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            DiscoverScreen(favorites, watched, onMediaClick = { selectedMedia = it })
+                        }
+                    }
+
+                    if (2 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 2 && selectedMedia == null) 1f else 0f }
+                                .zIndex(if (selectedTab == 2 && selectedMedia == null) 1f else 0f)
+                                .verticalScroll(libraryScrollState)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[2], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            LibraryScreen(favorites, watched)
+                            Spacer(Modifier.height(28.dp))
+                        }
+                    }
+
+                    if (3 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 3) 1f else 0f }
+                                .zIndex(if (selectedTab == 3) 1f else 0f)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[3], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(14.dp))
+                            IptvManagerScreen(
+                                onPlayUrl = onPlayUrl,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    if (4 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 4 && selectedMedia == null) 1f else 0f }
+                                .zIndex(if (selectedTab == 4 && selectedMedia == null) 1f else 0f)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[4], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            com.tombad8900.cinemastreamnative.browser.BrowserScreen(
+                                onPlayUrl = onPlayUrl,
+                                onPlayCaptured = onPlayCaptured,
+                                sources = browserSources,
+                                media = browserMedia,
+                                season = browserSeason,
+                                episode = browserEpisode,
+                                sourcePickerRequest = sourcePickerRequest,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    if (5 in visitedTabs) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = if (selectedTab == 5) 1f else 0f }
+                                .zIndex(if (selectedTab == 5) 1f else 0f)
+                                .verticalScroll(settingsScrollState)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[5], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            SettingsScreen()
+                            Spacer(Modifier.height(28.dp))
+                        }
+                    }
+
+                    if (selectedMedia != null) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Background)
+                                .padding(horizontal = 18.dp)
+                        ) {
+                            Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            Text(tabs[selectedTab], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(18.dp))
+                            TmdbDetailsScreen(
+                                media = selectedMedia!!,
+                                onBack = { selectedMedia = null },
+                                onPlay = { season, episode ->
+                                    browserSources = com.tombad8900.cinemastreamnative.sources.SourceStore
+                                        .load(appContext)
+                                        .filter { it.enabled && !it.hidden }
+                                        .sortedBy { it.priority }
+
+                                    browserMedia = selectedMedia
+                                    browserSeason = season
+                                    browserEpisode = episode
+                                    selectedMedia = null
+                                    selectedTab = 4
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
-
 @Composable
 private fun HomeScreen(
     favoriteCount: Int,
@@ -651,65 +726,79 @@ private fun IptvScreen(channels: MutableList<Channel>) {
 
 @Composable
 private fun SettingsScreen() {
-    var darkMode by remember { mutableStateOf(true) }
-    var autoPlay by remember { mutableStateOf(false) }
+    var sourcesExpanded by remember { mutableStateOf(false) }
+    var subtitleExpanded by remember { mutableStateOf(false) }
+    var providersExpanded by remember { mutableStateOf(false) }
+    var adBlockExpanded by remember { mutableStateOf(false) }
+    var tmdbExpanded by remember { mutableStateOf(false) }
+    var aboutExpanded by remember { mutableStateOf(false) }
 
-    SectionTitle("تفضيلات التطبيق")
-    SettingRow("المظهر الداكن", "واجهة سينمائية داكنة", darkMode) { darkMode = it }
-    SettingRow("التشغيل التلقائي", "الانتقال للمحتوى التالي", autoPlay) { autoPlay = it }
-    Spacer(Modifier.height(18.dp))
-    SectionTitle("مصادر التشغيل")
-    SourceSettingsScreen()
-    Spacer(Modifier.height(18.dp))
-    SectionTitle("إعدادات الترجمة")
-    SubtitleSettingsScreen()
-    SubtitleProviderSettingsScreen()
-    Spacer(Modifier.height(18.dp))
-    SectionTitle("حظر الإعلانات")
-    AdBlockSettingsScreen()
+    Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        SettingsSection("مصادر التشغيل", "إدارة واستيراد مصادر الفيديو", sourcesExpanded,
+            { sourcesExpanded = !sourcesExpanded }) { SourceSettingsScreen() }
 
-    Spacer(Modifier.height(18.dp))
-    SectionTitle("حول التطبيق")
-    Surface(Modifier.fillMaxWidth(), color = Panel, shape = RoundedCornerShape(17.dp)) {
-        Column(Modifier.padding(17.dp)) {
-        TmdbSettingsScreen()
+        SettingsSection("إعدادات الترجمة", "الخط والحجم واللون والموضع والتوقيت",
+            subtitleExpanded, { subtitleExpanded = !subtitleExpanded }) {
+            SubtitleSettingsScreen()
+        }
 
-            Text("CinemaStream Native", color = Gold, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text("الإصدار 0.1.0", color = Color.White, fontSize = 13.sp)
-            Text("تطبيق أصلي لنظام Android قيد التطوير.", color = Muted, fontSize = 12.sp)
+        SettingsSection("مزوّدو الترجمة", "مفاتيح SubDL وOpenSubtitles",
+            providersExpanded, { providersExpanded = !providersExpanded }) {
+            SubtitleProviderSettingsScreen()
+        }
+
+        SettingsSection("حظر الإعلانات", "قواعدك الشخصية واستيراد النطاقات",
+            adBlockExpanded, { adBlockExpanded = !adBlockExpanded }) {
+            AdBlockSettingsScreen()
+        }
+
+        SettingsSection("إعدادات TMDB", "مفتاح API والاتصال بالخدمة",
+            tmdbExpanded, { tmdbExpanded = !tmdbExpanded }) {
+            TmdbSettingsScreen()
+        }
+
+        SettingsSection("حول التطبيق", "معلومات CinemaStream Native",
+            aboutExpanded, { aboutExpanded = !aboutExpanded }) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("CinemaStream Native", color = Gold, fontWeight = FontWeight.Bold)
+                Text("الإصدار 0.1.0", color = Color.White, fontSize = 13.sp)
+                Text("تطبيق أصلي لنظام Android.", color = Muted, fontSize = 12.sp)
+                Text("المظهر الحالي: داكن", color = Muted, fontSize = 12.sp)
+            }
         }
     }
-    Spacer(Modifier.height(12.dp))
-    Text(
-        "ملاحظة: إعدادات هذه المرحلة تفاعلية داخل الواجهة، وسيتم ربط حفظها الدائم لاحقًا.",
-        color = Muted,
-        fontSize = 11.sp,
-        lineHeight = 18.sp
-    )
 }
 
 @Composable
-private fun SettingRow(
+private fun SettingsSection(
     title: String,
     description: String,
-    checked: Boolean,
-    onChecked: (Boolean) -> Unit
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
-        Modifier.fillMaxWidth().padding(bottom = 9.dp),
+        modifier = Modifier.fillMaxWidth(),
         color = Panel,
-        shape = RoundedCornerShape(15.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
-        Row(
-            Modifier.padding(horizontal = 15.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Bold)
-                Text(description, color = Muted, fontSize = 11.sp)
+        Column(Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, color = Gold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(description, color = Muted, fontSize = 11.sp)
+                }
+                Text(if (expanded) "−" else "+", color = Gold, fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold)
             }
-            Switch(checked = checked, onCheckedChange = onChecked)
+            if (expanded) {
+                Spacer(Modifier.height(13.dp))
+                content()
+            }
         }
     }
 }
+

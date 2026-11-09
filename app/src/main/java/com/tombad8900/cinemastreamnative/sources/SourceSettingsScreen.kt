@@ -3,6 +3,8 @@ package com.tombad8900.cinemastreamnative.sources
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +24,7 @@ fun SourceSettingsScreen() {
     val context = LocalContext.current
     var sources by remember { mutableStateOf(SourceStore.load(context)) }
     var message by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -31,7 +34,6 @@ fun SourceSettingsScreen() {
                 val json = context.contentResolver.openInputStream(uri)
                     ?.bufferedReader()?.use { it.readText() }
                     ?: throw IllegalArgumentException("تعذرت قراءة الملف")
-
                 val count = SourceStore.importJson(context, json)
                 sources = SourceStore.load(context)
                 message = "تم استيراد $count مصدر بنجاح"
@@ -46,116 +48,73 @@ fun SourceSettingsScreen() {
         SourceStore.save(context, sources)
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text(
-            "إدارة مصادر التشغيل",
-            color = SourceGold,
-            fontWeight = FontWeight.Bold,
-            fontSize = 16.sp
-        )
+    val filteredSources = remember(sources, query) {
+        sources.sortedBy { it.priority }.filter {
+            query.isBlank() || it.name.contains(query, true) || it.id.contains(query, true)
+        }
+    }
 
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Text("إدارة مصادر التشغيل", color = SourceGold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
         Text(
             "استورد ملف JSON يحتوي على data.servers. سيتم استيراد المصادر فقط دون تغيير المفضلة أو سجل المشاهدة أو إعدادات التطبيق.",
-            color = SourceMuted,
-            fontSize = 12.sp,
-            lineHeight = 19.sp
+            color = SourceMuted, fontSize = 12.sp, lineHeight = 18.sp
         )
-
         Button(
-            onClick = {
-                picker.launch(arrayOf("application/json", "text/*", "application/octet-stream"))
-            },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text("استيراد مصادر من ملف JSON")
-        }
+            onClick = { picker.launch(arrayOf("application/json", "text/*", "application/octet-stream")) },
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+        ) { Text("استيراد مصادر من ملف JSON") }
 
-        if (message.isNotBlank()) {
-            Text(message, color = SourceGold, fontSize = 12.sp)
-        }
+        if (message.isNotBlank()) Text(message, color = SourceGold, fontSize = 12.sp)
+        Text("المصادر المحفوظة: ${sources.size} · الظاهرة: ${filteredSources.size}",
+            color = Color.White, fontWeight = FontWeight.Bold)
 
-        Text(
-            "المصادر المحفوظة (${sources.size})",
-            color = Color.White,
-            fontWeight = FontWeight.Bold
-        )
-
-        if (sources.isEmpty()) {
-            Text(
-                "لا توجد مصادر بعد. استورد ملف JSON لإضافتها.",
-                color = SourceMuted,
-                fontSize = 12.sp
+        if (sources.isNotEmpty()) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                label = { Text("بحث عن مصدر") }, placeholder = { Text("الاسم أو المعرّف") }
             )
         }
 
-        sources.sortedBy { it.priority }.forEach { source ->
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = SourcePanel,
-                shape = RoundedCornerShape(14.dp)
+        if (filteredSources.isEmpty()) {
+            Text(
+                if (sources.isEmpty()) "لا توجد مصادر بعد. استورد ملف JSON لإضافتها."
+                else "لا توجد مصادر تطابق البحث.",
+                color = SourceMuted, fontSize = 12.sp
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 310.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(13.dp),
-                    verticalArrangement = Arrangement.spacedBy(7.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                source.name,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                "المعرّف: ${source.id} · الأولوية: ${source.priority}",
-                                color = SourceMuted,
-                                fontSize = 10.sp
-                            )
+                items(filteredSources, key = { it.id }) { source ->
+                    Surface(Modifier.fillMaxWidth(), color = SourcePanel,
+                        shape = RoundedCornerShape(13.dp)) {
+                        Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(source.name, color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text("المعرّف: ${source.id} · الأولوية: ${source.priority}",
+                                        color = SourceMuted, fontSize = 10.sp)
+                                }
+                                TextButton(onClick = {
+                                    sources = sources.filterNot { it.id == source.id }
+                                    SourceStore.save(context, sources)
+                                }) { Text("حذف", color = Color(0xFFFF7777)) }
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("تفعيل المصدر", color = Color.White, fontSize = 12.sp)
+                                Switch(source.enabled, onCheckedChange = { updateSource(source.copy(enabled = it)) })
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("إخفاء المصدر من الاختيار", color = Color.White, fontSize = 12.sp)
+                                Switch(source.hidden, onCheckedChange = { updateSource(source.copy(hidden = it)) })
+                            }
+                            if (source.notes.isNotBlank()) {
+                                Text(source.notes, color = SourceMuted, fontSize = 11.sp)
+                            }
                         }
-                        TextButton(
-                            onClick = {
-                                sources = sources.filterNot { it.id == source.id }
-                                SourceStore.save(context, sources)
-                            }
-                        ) {
-                            Text("حذف", color = Color(0xFFFF7777))
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("تفعيل المصدر", color = Color.White, fontSize = 12.sp)
-                        Switch(
-                            checked = source.enabled,
-                            onCheckedChange = {
-                                updateSource(source.copy(enabled = it))
-                            }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("إخفاء المصدر من الاختيار", color = Color.White, fontSize = 12.sp)
-                        Switch(
-                            checked = source.hidden,
-                            onCheckedChange = {
-                                updateSource(source.copy(hidden = it))
-                            }
-                        )
-                    }
-
-                    if (source.notes.isNotBlank()) {
-                        Text(source.notes, color = SourceMuted, fontSize = 11.sp)
                     }
                 }
             }

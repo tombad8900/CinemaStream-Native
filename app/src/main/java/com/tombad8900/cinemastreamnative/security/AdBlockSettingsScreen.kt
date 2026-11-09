@@ -6,9 +6,12 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
@@ -106,11 +109,11 @@ object AdBlockStore {
 @Composable
 fun AdBlockSettingsScreen() {
     val context = LocalContext.current
-
     var rules by remember { mutableStateOf(AdBlockStore.getRules(context)) }
     var enabled by remember { mutableStateOf(AdBlockStore.isEnabled(context)) }
     var input by remember { mutableStateOf("") }
     var editingRule by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
 
     fun refreshRules(updated: Set<String>) {
         AdBlockStore.setRules(context, updated)
@@ -122,75 +125,48 @@ fun AdBlockSettingsScreen() {
     ) { uri ->
         if (uri != null) {
             runCatching {
-                val bytes = context.contentResolver.openInputStream(uri)?.use {
-                    it.readBytes()
-                } ?: throw IllegalStateException("تعذر قراءة الملف")
-
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("تعذر قراءة الملف")
                 if (bytes.size > 5 * 1024 * 1024) {
                     throw IllegalArgumentException("حجم الملف أكبر من 5 ميجابايت")
                 }
-
                 val imported = AdBlockStore.parse(bytes.toString(Charsets.UTF_8))
                 if (imported.isEmpty()) {
                     throw IllegalArgumentException("لم يتم العثور على نطاقات صالحة")
                 }
-
                 refreshRules(rules + imported)
-                Toast.makeText(
-                    context,
-                    "تم استيراد ${imported.size} نطاق",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(context, "تم استيراد ${imported.size} نطاق", Toast.LENGTH_SHORT).show()
             }.onFailure {
-                Toast.makeText(
-                    context,
-                    it.message ?: "تعذر استيراد الملف",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(context, it.message ?: "تعذر استيراد الملف", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+    val filteredRules = remember(rules, query) {
+        rules.sorted().filter { query.isBlank() || it.contains(query.trim(), ignoreCase = true) }
+    }
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Text("مانع الإعلانات الشخصي", style = MaterialTheme.typography.titleMedium)
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(Modifier.weight(1f)) {
                 Text("تفعيل القائمة الشخصية")
-                Text(
-                    "تُضاف قواعدك إلى مانع الإعلانات الحالي",
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text("تُضاف قواعدك إلى مانع الإعلانات الحالي", style = MaterialTheme.typography.bodySmall)
             }
-            Switch(
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    AdBlockStore.setEnabled(context, it)
-                }
-            )
+            Switch(checked = enabled, onCheckedChange = {
+                enabled = it
+                AdBlockStore.setEnabled(context, it)
+            })
         }
-
         OutlinedTextField(
-            value = input,
-            onValueChange = { input = it },
+            value = input, onValueChange = { input = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("نطاق أو رابط إعلاني") },
-            placeholder = { Text("example.com") },
-            singleLine = true
+            placeholder = { Text("example.com") }, singleLine = true
         )
-
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
-                val parsed = AdBlockStore.parse(input)
-                val newRule = parsed.firstOrNull()
-
+                val newRule = AdBlockStore.parse(input).firstOrNull()
                 if (newRule == null) {
                     Toast.makeText(context, "أدخل نطاقًا صالحًا", Toast.LENGTH_SHORT).show()
                 } else {
@@ -201,54 +177,55 @@ fun AdBlockSettingsScreen() {
                     input = ""
                     editingRule = null
                 }
-            }) {
-                Text(if (editingRule == null) "إضافة" else "حفظ التعديل")
-            }
+            }) { Text(if (editingRule == null) "إضافة" else "حفظ التعديل") }
 
-            OutlinedButton(onClick = {
-                picker.launch(arrayOf("*/*"))
-            }) {
-                Text("استيراد ملف")
-            }
+            OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("استيراد ملف") }
         }
 
-        Text("القواعد الشخصية: ${rules.size}")
+        Text("النطاقات: ${rules.size} · نتائج البحث: ${filteredRules.size}", fontWeight = FontWeight.Bold)
+        if (rules.isNotEmpty()) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("بحث في النطاقات") },
+                placeholder = { Text("اكتب اسم النطاق") }, singleLine = true
+            )
+        }
 
-        if (rules.isEmpty()) {
+        if (filteredRules.isEmpty()) {
             Text(
-                "لم تتم إضافة نطاقات بعد.",
+                if (rules.isEmpty()) "لم تتم إضافة نطاقات بعد."
+                else "لا توجد نطاقات تطابق البحث.",
                 style = MaterialTheme.typography.bodySmall
             )
         } else {
-            rules.sorted().forEach { rule ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        rule,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    TextButton(onClick = {
-                        input = rule
-                        editingRule = rule
-                    }) {
-                        Text("تعديل")
-                    }
-                    TextButton(onClick = {
-                        refreshRules(rules - rule)
-                        if (editingRule == rule) {
-                            editingRule = null
-                            input = ""
-                        }
-                    }) {
-                        Text("حذف")
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                items(filteredRules, key = { it }) { rule ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text(rule, modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = {
+                            input = rule
+                            editingRule = rule
+                        }) { Text("تعديل") }
+                        TextButton(onClick = {
+                            refreshRules(rules - rule)
+                            if (editingRule == rule) {
+                                editingRule = null
+                                input = ""
+                            }
+                        }) { Text("حذف") }
                     }
                 }
             }
         }
-
         Text(
             "يدعم TXT وCSV وHOSTS وقواعد AdBlock الأساسية. تُحفظ أسماء النطاقات فقط، ولا تُحفظ رموز التتبع أو بيانات الروابط.",
             style = MaterialTheme.typography.bodySmall

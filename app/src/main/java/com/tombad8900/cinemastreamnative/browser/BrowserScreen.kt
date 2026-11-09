@@ -30,6 +30,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
+import java.net.URLDecoder
+import android.util.Base64
 import android.app.Activity
 import android.webkit.JsResult
 import android.webkit.JsPromptResult
@@ -80,15 +82,68 @@ private fun isBlockedAdUrl(rawUrl: String, pageUrl: String): Boolean {
 }
 
 private class BrowserBridge(
-    private val onSubtitle: (String) -> Unit
+    private val onSubtitle: (String, String, String) -> Unit,
+    private val onContext: (String, String) -> Unit
 ) {
     @JavascriptInterface
-    fun subtitle(url: String) {
-        onSubtitle(url)
+    fun subtitle(url: String, pageUrl: String, signature: String) {
+        onSubtitle(url, pageUrl, signature)
+    }
+
+    @JavascriptInterface
+    fun context(pageUrl: String, signature: String) {
+        onContext(pageUrl, signature)
     }
 }
 
+private fun unwrapWrappedUrl(raw: String): String? {
+    val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
+    if (!uri.isHierarchical) return null
+    val accepted = setOf(
+        "url", "file", "src", "source", "link",
+        "stream", "video", "media", "data"
+    )
+
+    fun valid(value: String): Boolean {
+        val parsed = runCatching { Uri.parse(value) }.getOrNull() ?: return false
+        return (parsed.scheme.equals("http", true) ||
+                parsed.scheme.equals("https", true)) &&
+                !parsed.host.isNullOrBlank()
+    }
+
+    for (key in uri.queryParameterNames) {
+        if (key.lowercase() !in accepted) continue
+
+        val candidate = uri.getQueryParameter(key)?.trim().orEmpty()
+        if (candidate.isBlank()) continue
+        if (valid(candidate)) return candidate
+
+        // Uri فك طبقة الترميز الأولى بالفعل؛ نفك طبقة إضافية فقط.
+        val decoded = runCatching {
+            URLDecoder.decode(candidate.replace("+", "%2B"), "UTF-8")
+        }.getOrDefault(candidate)
+
+        if (decoded != candidate && valid(decoded)) return decoded
+
+        // دعم Base64 فقط إذا نتج عنه رابط HTTP/HTTPS صالح.
+        val compact = candidate.replace('-', '+').replace('_', '/')
+        val padded = compact + "=".repeat((4 - compact.length % 4) % 4)
+        val base64 = runCatching {
+            String(Base64.decode(padded, Base64.DEFAULT), Charsets.UTF_8).trim()
+        }.getOrNull()
+
+        if (!base64.isNullOrBlank() && valid(base64)) return base64
+    }
+
+    return null
+}
+
 private fun classifyResource(url: String): BrowserCapture? {
+    val unwrapped = unwrapWrappedUrl(url)
+    if (!unwrapped.isNullOrBlank() && unwrapped != url) {
+        classifyResource(unwrapped)?.let { return it }
+    }
+
     val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
     val path = uri.path.orEmpty().lowercase()
     val query = uri.encodedQuery.orEmpty().lowercase()
@@ -185,9 +240,36 @@ fun BrowserScreen(
     fun addCapture(capture: BrowserCapture, session: Long = captureSession.get()) {
         mainHandler.post {
             if (captureSession.get() != session) return@post
-            if (captures.none { it.url == capture.url }) {
+
+            val index = captures.indexOfFirst { it.url == capture.url }
+
+            if (index < 0) {
                 if (captures.size >= 100) captures.removeAt(0)
                 captures.add(capture)
+            } else {
+                val old = captures[index]
+                val merged = old.headers.toMutableMap()
+
+                capture.headers.forEach { (name, value) ->
+                    if (value.isNotBlank()) {
+                        val existing = merged.keys.firstOrNull {
+                            it.equals(name, ignoreCase = true)
+                        }
+                        if (existing == null) {
+                            merged[name] = value
+                        } else {
+                            merged[existing] = value
+                        }
+                    }
+                }
+
+                captures[index] = old.copy(
+                    kind = if (capture.playable && !old.playable)
+                        capture.kind else old.kind,
+                    playable = old.playable || capture.playable,
+                    isArabicSubtitle = old.isArabicSubtitle || capture.isArabicSubtitle,
+                    headers = merged
+                )
             }
         }
     }
@@ -234,10 +316,29 @@ fun BrowserScreen(
     }
 
     val currentUrlRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+    val captureContextRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+
+    fun acceptCaptureContext(pageUrl: String, signature: String) {
+        if (signature.isBlank()) return
+
+        mainHandler.post {
+            val currentPage = currentUrlRef.get().ifBlank { address }
+            if (!isSameSite(pageUrl, currentPage)) return@post
+
+            val previous = captureContextRef.getAndSet(signature)
+
+            if (previous.isNotBlank() && previous != signature) {
+                clearCaptureSession()
+                captureContextRef.set(signature)
+            }
+        }
+    }
+
     fun updateMainPage(url: String) {
         val previousUrl = currentUrlRef.get()
         if (previousUrl.isNotBlank() && previousUrl != url) {
             clearCaptureSession()
+            captureContextRef.set("")
         }
         currentUrlRef.set(url)
         address = url
@@ -400,11 +501,31 @@ fun BrowserScreen(
                     }
 
                     addJavascriptInterface(
-                        BrowserBridge { subUrl ->
-                            val session = captureSession.get()
-                            addSubtitle(subUrl, session)
-                            addCapture(BrowserCapture(subUrl, "ترجمة عربية 💬", false, true), session)
-                        },
+                        BrowserBridge(
+                            onSubtitle = { subUrl, pageUrl, signature ->
+                                if (captureContextRef.get() == signature &&
+                                    isSameSite(
+                                        pageUrl,
+                                        currentUrlRef.get().ifBlank { address }
+                                    )
+                                ) {
+                                    val session = captureSession.get()
+                                    addSubtitle(subUrl, session)
+                                    addCapture(
+                                        BrowserCapture(
+                                            subUrl,
+                                            "ترجمة عربية 💬",
+                                            false,
+                                            true
+                                        ),
+                                        session
+                                    )
+                                }
+                            },
+                            onContext = { pageUrl, signature ->
+                                acceptCaptureContext(pageUrl, signature)
+                            }
+                        ),
                         "CinemaCapture"
                     )
 
@@ -577,6 +698,16 @@ fun BrowserScreen(
                                     .filterKeys { it.lowercase() in allowed }
                                     .toMutableMap()
 
+                                // أرفق Cookies الخاصة بعنوان طلب الفيديو إن لم تكن موجودة.
+                                if (headers.keys.none { it.equals("Cookie", true) }) {
+                                    val cookies = android.webkit.CookieManager
+                                        .getInstance()
+                                        .getCookie(url)
+                                    if (!cookies.isNullOrBlank()) {
+                                        headers["Cookie"] = cookies
+                                    }
+                                }
+
                                 if (headers.keys.none { it.equals("User-Agent", true) }) {
                                     BROWSER_UA.let {
                                         headers["User-Agent"] = it
@@ -587,7 +718,7 @@ fun BrowserScreen(
                                     headers["Referer"] = address
                                 }
                                 addCapture(item.copy(headers = headers), requestSession)
-                                if (!item.playable) addSubtitle(url, requestSession)
+                                if (!item.playable) addSubtitle(item.url, requestSession)
                             }
                             return null
                         }
@@ -600,24 +731,138 @@ fun BrowserScreen(
                                     window.alert = function() { return true; };
                                     window.confirm = function() { return true; };
                                     window.prompt = function() { return null; };
+
                                     if (window.Notification) {
                                         window.Notification.requestPermission = function() {
                                             return Promise.resolve('denied');
                                         };
                                     }
+
+                                    if (window.__csCaptureWatcher) return;
+                                    window.__csCaptureWatcher = true;
+
+                                    function contextKey() {
+                                        var parts = [location.href];
+
+                                        document.querySelectorAll('video').forEach(function(v) {
+                                            parts.push(v.currentSrc || v.src || '');
+
+                                            v.querySelectorAll('source').forEach(function(x) {
+                                                parts.push(x.src || x.getAttribute('src') || '');
+                                            });
+                                        });
+
+                                        document.querySelectorAll(
+                                            '[aria-current="true"],[aria-selected="true"],' +
+                                            '[data-episode-id],[data-episode],.episode.active,.episodes .active'
+                                        ).forEach(function(el) {
+                                            parts.push(
+                                                el.getAttribute('data-episode-id') ||
+                                                el.getAttribute('data-episode') ||
+                                                el.getAttribute('aria-label') ||
+                                                (el.textContent || '').trim().slice(0, 100)
+                                            );
+                                        });
+
+                                        return parts.join('|').slice(0, 3000);
+                                    }
+
+                                    var lastContext = '';
+                                    var timer = 0;
+
+                                    function checkContext() {
+                                        clearTimeout(timer);
+
+                                        timer = setTimeout(function() {
+                                            var next = contextKey();
+
+                                            if (lastContext && next !== lastContext) {
+                                                lastContext = next;
+                                                if (window.CinemaCapture) {
+                                                    window.CinemaCapture.context(location.href, next);
+                                                }
+                                            } else if (!lastContext) {
+                                                lastContext = next;
+                                            }
+                                        }, 700);
+                                    }
+
                                     function checkTracks() {
+                                        var signature = contextKey();
+
                                         document.querySelectorAll('video track, track').forEach(function(t) {
                                             var lang = (t.srclang || t.label || '').toLowerCase();
                                             var src = t.src;
-                                            if (src && (lang.includes('ar') || lang.includes('arabic') || lang.includes('عربي') || /[._\/=-](ar|ara|arabic)[._\/=-]/i.test(src))) {
+
+                                            if (src && (
+                                                lang.includes('ar') ||
+                                                lang.includes('arabic') ||
+                                                lang.includes('عربي') ||
+                                                /[._\\/-=](ar|ara|arabic)[._\\/-=]/i.test(src)
+                                            )) {
                                                 if (window.CinemaCapture) {
-                                                    window.CinemaCapture.subtitle(src);
+                                                    window.CinemaCapture.subtitle(
+                                                        src, location.href, signature
+                                                    );
                                                 }
                                             }
                                         });
                                     }
+
+                                    // ننتظر استقرار المشغل الأول قبل اعتماد خط الأساس.
+                                    setTimeout(function() {
+                                        lastContext = contextKey();
+
+                                        if (window.CinemaCapture) {
+                                            window.CinemaCapture.context(
+                                                location.href, lastContext
+                                            );
+                                        }
+
+                                        var observer = new MutationObserver(checkContext);
+                                        observer.observe(document.documentElement, {
+                                            subtree: true,
+                                            childList: true,
+                                            attributes: true,
+                                            attributeFilter: [
+                                                'src', 'class', 'aria-current',
+                                                'aria-selected', 'data-episode-id',
+                                                'data-episode'
+                                            ]
+                                        });
+                                    }, 2200);
+
+                                    document.addEventListener('click', function(e) {
+                                        var target = e.target && e.target.closest ?
+                                            e.target.closest(
+                                                '[data-episode-id],[data-episode],a,button,[role="button"]'
+                                            ) : null;
+
+                                        if (target) checkContext();
+                                    }, true);
+
+                                    var push = history.pushState;
+                                    history.pushState = function() {
+                                        var result = push.apply(this, arguments);
+                                        checkContext();
+                                        return result;
+                                    };
+
+                                    var replace = history.replaceState;
+                                    history.replaceState = function() {
+                                        var result = replace.apply(this, arguments);
+                                        checkContext();
+                                        return result;
+                                    };
+
+                                    window.addEventListener('popstate', checkContext);
+                                    window.addEventListener('hashchange', checkContext);
+
                                     checkTracks();
-                                    setInterval(checkTracks, 1500);
+                                    setInterval(function() {
+                                        checkContext();
+                                        checkTracks();
+                                    }, 1800);
                                 })();
                                 """.trimIndent(),
                                 null
