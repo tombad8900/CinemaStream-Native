@@ -2,6 +2,9 @@ package com.tombad8900.cinemastreamnative.browser
 
 import com.tombad8900.cinemastreamnative.security.AdBlockStore
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -151,8 +154,18 @@ fun BrowserScreen(
     remember(adBlockContext) { AdBlockStore.load(adBlockContext) }
 
     val context = LocalContext.current
+    val clipboardManager = remember(context) {
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
     val captures = remember { mutableStateListOf<BrowserCapture>() }
     val subtitleUrls = remember { mutableStateListOf<String>() }
+    val captureSession = remember { java.util.concurrent.atomic.AtomicLong(0L) }
+
+    fun clearCaptureSession() {
+        captureSession.incrementAndGet()
+        captures.clear()
+        subtitleUrls.clear()
+    }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     var address by remember { mutableStateOf("") }
@@ -169,8 +182,9 @@ fun BrowserScreen(
             ?: pageTitle
     }
 
-    fun addCapture(capture: BrowserCapture) {
+    fun addCapture(capture: BrowserCapture, session: Long = captureSession.get()) {
         mainHandler.post {
+            if (captureSession.get() != session) return@post
             if (captures.none { it.url == capture.url }) {
                 if (captures.size >= 100) captures.removeAt(0)
                 captures.add(capture)
@@ -178,8 +192,9 @@ fun BrowserScreen(
         }
     }
 
-    fun addSubtitle(url: String) {
+    fun addSubtitle(url: String, session: Long = captureSession.get()) {
         mainHandler.post {
+            if (captureSession.get() != session) return@post
             if (subtitleUrls.size < 50 && url !in subtitleUrls) {
                 subtitleUrls.add(0, url)
             }
@@ -205,8 +220,7 @@ fun BrowserScreen(
                 .replace("{e}", episode.toString(), ignoreCase = true)
         }
 
-        captures.clear()
-        subtitleUrls.clear()
+        clearCaptureSession()
         address = url
         showSources = false
         webViewInstance?.loadUrl(url)
@@ -214,13 +228,20 @@ fun BrowserScreen(
 
     LaunchedEffect(media?.id, season, episode) {
         if (media != null) {
-            captures.clear()
-            subtitleUrls.clear()
+            clearCaptureSession()
             showSources = true
         }
     }
 
     val currentUrlRef = remember { java.util.concurrent.atomic.AtomicReference("") }
+    fun updateMainPage(url: String) {
+        val previousUrl = currentUrlRef.get()
+        if (previousUrl.isNotBlank() && previousUrl != url) {
+            clearCaptureSession()
+        }
+        currentUrlRef.set(url)
+        address = url
+    }
     var canGoBackState by remember { mutableStateOf(false) }
     var webViewKey by remember { mutableStateOf(0) }
 
@@ -338,8 +359,7 @@ fun BrowserScreen(
                     val value = address.trim()
                     if (value.isNotBlank()) {
                         val url = if (value.startsWith("http://") || value.startsWith("https://")) value else "https://$value"
-                        captures.clear()
-                        subtitleUrls.clear()
+                        clearCaptureSession()
                         webViewInstance?.loadUrl(url)
                     }
                 },
@@ -381,8 +401,9 @@ fun BrowserScreen(
 
                     addJavascriptInterface(
                         BrowserBridge { subUrl ->
-                            addSubtitle(subUrl)
-                            addCapture(BrowserCapture(subUrl, "ترجمة عربية 💬", false, true))
+                            val session = captureSession.get()
+                            addSubtitle(subUrl, session)
+                            addCapture(BrowserCapture(subUrl, "ترجمة عربية 💬", false, true), session)
                         },
                         "CinemaCapture"
                     )
@@ -508,13 +529,11 @@ fun BrowserScreen(
 
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                            if (!url.isNullOrBlank()) {
-                                currentUrlRef.set(url)
-                                address = url
-                            }
+                            if (!url.isNullOrBlank()) updateMainPage(url)
                         }
 
                         override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                            if (!url.isNullOrBlank()) updateMainPage(url)
                             canGoBackState = view?.canGoBack() == true
                         }
 
@@ -539,6 +558,7 @@ fun BrowserScreen(
                             view: WebView?,
                             req: WebResourceRequest?
                         ): WebResourceResponse? {
+                            val requestSession = captureSession.get()
                             val url = req?.url?.toString() ?: return null
                             if (isBlockedAdUrl(url, currentUrlRef.get().ifBlank { address })) {
                                 return WebResourceResponse(
@@ -566,8 +586,8 @@ fun BrowserScreen(
                                     address.startsWith("http", true)) {
                                     headers["Referer"] = address
                                 }
-                                addCapture(item.copy(headers = headers))
-                                if (!item.playable) addSubtitle(url)
+                                addCapture(item.copy(headers = headers), requestSession)
+                                if (!item.playable) addSubtitle(url, requestSession)
                             }
                             return null
                         }
@@ -628,34 +648,76 @@ fun BrowserScreen(
             ) {
                 items(captures.sortedByDescending { captureScore(it) }, key = { it.url }) { item ->
                     val isBest = item.playable && item.url == captures.filter { it.playable }.maxByOrNull { captureScore(it) }?.url
-                    Row(
+
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        color = Color(0xFF2B2B2B),
+                        shape = MaterialTheme.shapes.medium
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text((if (isBest) "⭐ " else "") + item.kind, style = MaterialTheme.typography.labelMedium, color = Color.White)
-                            Text(
-                                item.url,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.LightGray,
-                                maxLines = 2
-                            )
-                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    (if (isBest) "⭐ " else "") + item.kind,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White
+                                )
+                                Text(
+                                    item.url,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.LightGray,
+                                    maxLines = 2
+                                )
+                            }
 
-                        if (item.playable) {
-                            TextButton(
-                                onClick = {
-                                    onPlayCaptured(
-                                        item.url,
-                                        playTitle,
-                                        item.headers,
-                                        subtitleUrls.distinct()
-                                    )
-                                }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("تشغيل بمشغل التطبيق")
+                                if (item.playable) {
+                                    Button(
+                                        onClick = {
+                                            onPlayCaptured(
+                                                item.url,
+                                                playTitle,
+                                                item.headers,
+                                                subtitleUrls.distinct()
+                                            )
+                                        },
+                                        modifier = Modifier.height(40.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                        shape = MaterialTheme.shapes.small,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFD6AA55),
+                                            contentColor = Color(0xFF20180A)
+                                        )
+                                    ) {
+                                        Text("تشغيل", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setPrimaryClip(
+                                            ClipData.newPlainText("CinemaStream URL", item.url)
+                                        )
+                                    },
+                                    modifier = Modifier.height(40.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                    shape = MaterialTheme.shapes.small,
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = Color(0xFFE2C27B)
+                                    )
+                                ) {
+                                    Text("نسخ", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }
