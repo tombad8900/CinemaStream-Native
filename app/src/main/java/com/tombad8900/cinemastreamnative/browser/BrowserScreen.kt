@@ -621,7 +621,8 @@ fun BrowserScreen(
                     .fillMaxWidth()
                     .heightIn(max = 150.dp)
             ) {
-                items(captures, key = { it.url }) { item ->
+                items(captures.sortedByDescending { captureScore(it) }, key = { it.url }) { item ->
+                    val isBest = item.playable && item.url == captures.filter { it.playable }.maxByOrNull { captureScore(it) }?.url
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -629,7 +630,7 @@ fun BrowserScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(item.kind, style = MaterialTheme.typography.labelMedium, color = Color.White)
+                            Text((if (isBest) "⭐ " else "") + item.kind, style = MaterialTheme.typography.labelMedium, color = Color.White)
                             Text(
                                 item.url,
                                 style = MaterialTheme.typography.bodySmall,
@@ -657,4 +658,14 @@ fun BrowserScreen(
             }
         }
     }
+}
+
+private fun captureScore(c: BrowserCapture): Int {
+    if (!c.playable) return -100
+    val u = c.url.lowercase()
+    var sc = 0
+    if ("master" in u) sc += 50
+    if (".m3u8" in u) sc += 40 else if (".mpd" in u) sc += 30 else if (".mp4" in u) sc += 20
+    if (Regex("(^|[/_.-])(ad|ads|advert|preroll|promo|trailer)([/_.-]|$)").containsMatchIn(u)) sc -= 80
+    return sc
 }
