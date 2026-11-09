@@ -227,13 +227,6 @@ private fun CinemaStreamApp(
                                 fontSize = 29.sp,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (selectedTab == 4 && browserMedia != null) {
-                                androidx.compose.material3.TextButton(
-                                    onClick = { sourcePickerRequest++ }
-                                ) {
-                                    Text("المصادر")
-                                }
-                            }
                         }
                         Spacer(Modifier.height(18.dp))
                         if (selectedMedia != null) {
