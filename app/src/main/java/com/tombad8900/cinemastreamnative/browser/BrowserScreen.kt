@@ -152,7 +152,7 @@ private fun classifyResource(url: String): BrowserCapture? {
 
     if (uri.scheme != "http" && uri.scheme != "https") return null
 
-    val isArabicSub = Regex("(^|[^a-z])(ar|ara|arabic)([^a-z]|$)").containsMatchIn(path + "?" + query) || full.contains("عربي")
+    val isArabicSub = ARABIC_SUB_REGEX.containsMatchIn(path + "?" + query) || full.contains("عربي")
     val subtitleHint = listOf(
         ".srt", ".vtt", ".ass", ".ssa", ".ttml", ".dfxp",
         "subtitle", "subtitles", "captions", "texttrack"
@@ -691,9 +691,29 @@ fun BrowserScreen(
                             }
                             val activity = ctx as? Activity ?: run { callback?.onCustomViewHidden(); return }
                             val decor = activity.window.decorView as? ViewGroup ?: run { callback?.onCustomViewHidden(); return }
-                            fullScreenCustomView = view
+                            val container = android.widget.FrameLayout(ctx).apply {
+                                setBackgroundColor(android.graphics.Color.BLACK)
+                                isClickable = true
+                                addView(view, android.widget.FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                ))
+                                addView(android.widget.TextView(ctx).apply {
+                                    text = "✕ إغلاق"
+                                    textSize = 16f
+                                    setTextColor(android.graphics.Color.WHITE)
+                                    setBackgroundColor(0x99000000.toInt())
+                                    setPadding(40, 28, 40, 28)
+                                    setOnClickListener { onHideCustomView() }
+                                }, android.widget.FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    android.view.Gravity.TOP or android.view.Gravity.END
+                                ))
+                            }
+                            fullScreenCustomView = container
                             fullScreenCallback = callback
-                            decor.addView(view, ViewGroup.LayoutParams(
+                            decor.addView(container, ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT
                             ))
@@ -944,6 +964,8 @@ fun BrowserScreen(
         }
 
         if (captures.isNotEmpty()) {
+            val ranked = captures.toList().sortedByDescending { captureScore(it) }
+            val bestUrl = ranked.firstOrNull { it.playable }?.url
             Text(
                 "الروابط والترجمات العربية المكتشفة (انقر للتشغيل بالمشغل الأصلي 🎬)",
                 modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
@@ -955,8 +977,8 @@ fun BrowserScreen(
                     .fillMaxWidth()
                     .heightIn(max = 150.dp)
             ) {
-                items(captures.sortedByDescending { captureScore(it) }, key = { it.url }) { item ->
-                    val isBest = item.playable && item.url == captures.filter { it.playable }.maxByOrNull { captureScore(it) }?.url
+                items(ranked, key = { it.url }) { item ->
+                    val isBest = item.playable && item.url == bestUrl
 
                     Surface(
                         modifier = Modifier
@@ -1042,7 +1064,7 @@ private fun captureScore(c: BrowserCapture): Int {
     var sc = 0
     if ("master" in u) sc += 50
     if (".m3u8" in u) sc += 40 else if (".mpd" in u) sc += 30 else if (".mp4" in u) sc += 20
-    if (Regex("(^|[/_.-])(ad|ads|advert|preroll|promo|trailer)([/_.-]|$)").containsMatchIn(u)) sc -= 80
+    if (AD_URL_REGEX.containsMatchIn(u)) sc -= 80
     return sc
 }
 
@@ -1065,3 +1087,6 @@ private fun saveSavedSites(ctx: android.content.Context, sites: List<Pair<String
     ctx.getSharedPreferences("browser_prefs", android.content.Context.MODE_PRIVATE)
         .edit().putString("saved_sites", arr.toString()).apply()
 }
+
+private val AD_URL_REGEX = Regex("(^|[/_.-])(ad|ads|advert|preroll|promo|trailer)([/_.-]|$)")
+private val ARABIC_SUB_REGEX = Regex("(^|[^a-z])(ar|ara|arabic)([^a-z]|$)")
