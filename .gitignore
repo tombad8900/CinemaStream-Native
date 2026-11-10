@@ -18,3 +18,7 @@ build/
 files.txt
 local.properties
 patch.py
+cs_backups/
+backups/
+.browser-prep-backup-*/
+FATAL EXCEPTION*

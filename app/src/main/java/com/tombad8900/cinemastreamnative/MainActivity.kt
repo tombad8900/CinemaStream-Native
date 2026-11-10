@@ -305,14 +305,12 @@ private fun CinemaStreamApp(
                         }
                     }
 
-                    if (4 in visitedTabs) {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = if (selectedTab == 4 && selectedMedia == null) 1f else 0f }
-                                .zIndex(if (selectedTab == 4 && selectedMedia == null) 1f else 0f)
-                                .padding(horizontal = 18.dp)
-                        ) {
+                    if (selectedTab == 4 && selectedMedia == null) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 18.dp)
+                    ) {
                             Text("C I N E M A S T R E A M", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(10.dp))
                             Text(tabs[4], color = Color.White, fontSize = 29.sp, fontWeight = FontWeight.Bold)

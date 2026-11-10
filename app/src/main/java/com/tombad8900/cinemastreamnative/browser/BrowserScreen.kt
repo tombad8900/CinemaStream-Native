@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import androidx.compose.ui.draw.clipToBounds
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
@@ -226,6 +227,8 @@ fun BrowserScreen(
     var address by remember { mutableStateOf("") }
     var pageTitle by remember { mutableStateOf("CinemaStream") }
     var showSources by remember { mutableStateOf(false) }
+    var showSaved by remember { mutableStateOf(false) }
+    var savedSites by remember { mutableStateOf(loadSavedSites(context)) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
     var fullScreenCustomView by remember { mutableStateOf<android.view.View?>(null) }
@@ -361,6 +364,10 @@ fun BrowserScreen(
     DisposableEffect(Unit) {
         onDispose {
             webViewInstance?.let { it.stopLoading(); it.destroy() }
+            fullScreenCustomView?.let { v -> (v.parent as? ViewGroup)?.removeView(v) }
+            fullScreenCallback?.onCustomViewHidden()
+            fullScreenCustomView = null
+            fullScreenCallback = null
             webViewInstance = null
         }
     }
@@ -377,6 +384,61 @@ fun BrowserScreen(
             .background(Color(0xFF202020))
             .padding(12.dp)
     ) {
+        if (showSaved) {
+            AlertDialog(
+                onDismissRequest = { showSaved = false },
+                title = { Text("المواقع المحفوظة") },
+                text = {
+                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
+                        item {
+                            Column {
+                                Button(
+                                    onClick = {
+                                        val cur = currentUrlRef.get().ifBlank { address }
+                                        if ((cur.startsWith("http://") || cur.startsWith("https://")) && savedSites.none { it.second == cur }) {
+                                            val name = Uri.parse(cur).host?.removePrefix("www.") ?: cur
+                                            val updated = savedSites + (name to cur)
+                                            savedSites = updated
+                                            saveSavedSites(context, updated)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("حفظ الصفحة الحالية") }
+                                Spacer(Modifier.height(8.dp))
+                            }
+                        }
+                        if (savedSites.isEmpty()) {
+                            item { Text("لا توجد مواقع محفوظة بعد. افتح موقعًا ثم اضغط حفظ الصفحة الحالية.") }
+                        } else {
+                            items(savedSites, key = { it.second }) { site ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            captures.clear()
+                                            subtitleUrls.clear()
+                                            address = site.second
+                                            webViewInstance?.loadUrl(site.second)
+                                            showSaved = false
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text(site.first, maxLines = 1) }
+                                    TextButton(onClick = {
+                                        val updated = savedSites.filter { it.second != site.second }
+                                        savedSites = updated
+                                        saveSavedSites(context, updated)
+                                    }) { Text("حذف") }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showSaved = false }) { Text("إغلاق") } }
+            )
+        }
+
         if (showSources) {
             val availableSources = sources.filter {
                 if (media?.mediaType.equals("tv", ignoreCase = true)) {
@@ -425,8 +487,9 @@ fun BrowserScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(playTitle, style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1, modifier = Modifier.weight(1f))
-            Button(onClick = { showSources = true }) {
-                Text("المصادر")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = { showSaved = true }) { Text("المواقع المحفوظة") }
+                Button(onClick = { showSources = true }) { Text("المصادر") }
             }
         }
 
@@ -473,10 +536,9 @@ fun BrowserScreen(
         Spacer(Modifier.height(8.dp))
 
         key(webViewKey) {
+        Box(Modifier.fillMaxWidth().weight(1f).clipToBounds().background(Color(0xFF202020))) {
         AndroidView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 WebView(ctx).apply {
                     webViewInstance = this
@@ -484,7 +546,8 @@ fun BrowserScreen(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                    setBackgroundColor(android.graphics.Color.WHITE)
+                    setBackgroundColor(0xFF202020.toInt())
+                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                     android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                     settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
 
@@ -878,6 +941,7 @@ fun BrowserScreen(
             update = {}
             )
         }
+        }
 
         if (captures.isNotEmpty()) {
             Text(
@@ -980,4 +1044,24 @@ private fun captureScore(c: BrowserCapture): Int {
     if (".m3u8" in u) sc += 40 else if (".mpd" in u) sc += 30 else if (".mp4" in u) sc += 20
     if (Regex("(^|[/_.-])(ad|ads|advert|preroll|promo|trailer)([/_.-]|$)").containsMatchIn(u)) sc -= 80
     return sc
+}
+
+private fun loadSavedSites(ctx: android.content.Context): List<Pair<String, String>> {
+    val raw = ctx.getSharedPreferences("browser_prefs", android.content.Context.MODE_PRIVATE)
+        .getString("saved_sites", "[]") ?: "[]"
+    return runCatching {
+        val arr = org.json.JSONArray(raw)
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val u = o.optString("url")
+            if (u.isBlank()) null else o.optString("name").ifBlank { u } to u
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun saveSavedSites(ctx: android.content.Context, sites: List<Pair<String, String>>) {
+    val arr = org.json.JSONArray()
+    sites.forEach { (n, u) -> arr.put(org.json.JSONObject().put("name", n).put("url", u)) }
+    ctx.getSharedPreferences("browser_prefs", android.content.Context.MODE_PRIVATE)
+        .edit().putString("saved_sites", arr.toString()).apply()
 }
